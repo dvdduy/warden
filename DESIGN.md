@@ -1,8 +1,8 @@
 # DESIGN.md — Warden `v0.1-core`
 
-> **Status:** living document — sections marked `TODO` are filled in as each session completes.
-> Reasoning for decisions already made is captured now; empirical sections (performance, failure
-> observations) are added once the code exists to observe.
+> **Status:** complete as of `v0.1-core`. Written incrementally as each session landed rather than
+> backfilled at the end — the empirical sections (concurrency limits, observability) reflect what
+> the Session 6 concurrency test and structured logging actually showed, not speculation.
 
 ---
 
@@ -177,15 +177,40 @@ enum CommandStatus { Pending, Delivered, Acked, Failed }
 
 ## What I would do differently at 1,000,000 devices
 
-TODO — fill in after Session 5 (you'll have hands-on experience with the in-memory limits by then).
-Sketch: the first thing to break is the in-memory command store under concurrent load. The sweeper
-becomes a bottleneck. Consider:
-- Partition command state by device shard.
-- Move the sweeper to a competing-consumer pattern across worker instances.
-- Replace the in-memory store with PostgreSQL + a `FOR UPDATE SKIP LOCKED` pattern for the sweeper.
-- Add jitter to check-in intervals to avoid thundering-herd on reconnect.
-- Separate the read path (desired-state serving) from the write path (state reporting, acks) —
-  they have very different scaling profiles.
+`v0.1-core`'s concurrency test (`ConcurrencyTests`, Session 6) runs 200 simulated agents against
+one `InMemoryCommandStore`/`InMemoryDeviceRepository` pair behind a single `lock`. That's the
+honest ceiling of this design: it proves *correctness* under contention, not throughput at scale.
+At 1,000,000 devices, in order of what breaks first:
+
+1. **The single-lock in-memory store becomes the bottleneck first.** Every `ReportStateAndGetNewCommands`
+   call and every sweep does a read-modify-write under one `lock (_gate)`. That's fine for hundreds
+   of concurrent callers; at fleet scale it serializes the whole system on one mutex.
+   → Partition command/device state by shard (e.g. hash of `DeviceId`), each shard with its own
+   lock or its own store instance, so unrelated devices stop contending with each other.
+
+2. **The ack-timeout sweeper is a single sequential scan (`GetDeliveredPastDeadline`) over every
+   command in the store.** At 1M devices with even a few in-flight commands each, that's a
+   multi-million-row scan on every sweep tick.
+   → Move to a competing-consumer pattern: multiple sweeper workers, each claiming a shard or a
+   batch via `FOR UPDATE SKIP LOCKED` once the store is PostgreSQL-backed (see decision #5), so
+   no single process scans the whole fleet.
+
+3. **In-memory storage doesn't survive a control-plane restart** — at this scale a restart mid-sweep
+   would leave commands stuck exactly where they were, with no way to resume ownership.
+   → PostgreSQL (or similar) behind the same `ICommandStore`/`IDeviceRepository` interfaces, which
+   is precisely why those interfaces exist — this is a `v0.2-mvp` swap, not a `v0.1-core` rewrite.
+
+4. **Polling every device on a fixed interval creates thundering-herd reconnect traffic** — if the
+   control plane restarts or a network partition heals, every agent's next poll lands in the same
+   window.
+   → Add jitter to the poll interval per device (already trivial: `Agent`/`AgentHost` own the delay
+   between cycles, not `Core`).
+
+5. **Read (desired-state serving) and write (state reporting, acks) have very different scaling
+   profiles** — desired state changes rarely and is read on every poll; actual-state/ack traffic is
+   constant and write-heavy.
+   → Split them onto separate paths/stores (e.g. desired state cached aggressively or served from a
+   read replica) once real load numbers justify it — premature at `v0.1-core`'s scale.
 
 ---
 
@@ -205,18 +230,76 @@ becomes a bottleneck. Consider:
 
 ## What I'd do next (beyond `v0.1-core`)
 
-TODO — fill in after Session 7 once you've lived with the constraints of the in-memory model.
+In roadmap order (see `docs/WARDEN_COURSE.md` "After v0.1-core"):
 
----
+- **`v0.2-mvp`**: swap the simulated setting for a real one (BitLocker via P/Invoke or WMI), replace
+  `InProcessControlPlaneClient` with a REST implementation behind the same `IControlPlaneClient`
+  interface, add PostgreSQL behind `ICommandStore`/`IDeviceRepository`, and a bare dashboard reading
+  `ControlPlane.GetHealthSnapshot()`. None of this touches `Warden.Core` — that's the point of the
+  seams built in `v0.1-core`.
+- **`v0.3-ipc`**: the user-context agent and hardened named-pipe IPC across the System↔User privilege
+  boundary. The highest-Windows-signal piece of this whole project, deliberately deferred until the
+  correctness model underneath it is proven.
+- **Real-time push (SignalR)**, a second policy beyond BitLocker, and multi-tenancy — once the
+  single-policy, polling-based loop is validated end-to-end with real devices.
+- **Distributed tracing** (see Observability notes below) once there's a real network hop to trace
+  across, not just an in-process call.
 
 ## Observability notes
 
-TODO — fill in after Session 6 (structured logging + correlation IDs).
+Session 6 added structured logging (`Microsoft.Extensions.Logging`) to `ControlPlane` and
+`AckTimeoutSweeper`, both defaulting to `NullLogger` so nothing changes for existing callers/tests
+that don't pass one in. Every log line is keyed on `CommandId`:
 
----
+```
+Command {CommandId} issued for device {DeviceId}: {Action}
+Command {CommandId} marked Delivered (attempt {Attempts})
+Command {CommandId} acked
+Command {CommandId} ack timeout — redelivering (attempt {Attempts}/{MaxAttempts})
+Command {CommandId} exhausted {MaxAttempts} delivery attempts — marking Failed
+Command {CommandId} superseded — desired state changed before it was acked
+```
+
+`CommandId` is the correlation id: because it's generated once (`Reconciler.Diff`) and carried
+unchanged through delivery, redelivery, and ack/fail, grepping one id's log lines reconstructs a
+command's entire life across the agent↔control-plane boundary — without a distributed tracing
+system, which would be overkill for an in-process transport. `Warden.Demo` wires a console logger
+provider into this at composition-root level (`Warden.ControlPlane`/`Warden.Agent` only depend on
+the `ILogger` *abstraction*, never a concrete sink — same seam discipline as everything else here).
+
+`FleetHealth` (`ControlPlane.GetHealthSnapshot()`) is the simplest possible health signal: a
+point-in-time count of commands by status. It answers "is anything stuck?" (`InFlightCommands`)
+and "is anything actively failing?" (`FailedCommands`) without needing a metrics backend. It's a
+full scan at query time — fine at `v0.1-core` scale, listed as the first thing to replace with
+running counters at real scale (see "What I would do differently at 1,000,000 devices").
+
+**What's still missing:** correlation across a real network boundary (a trace/span id that survives
+serialization) — irrelevant while the transport is in-process, but the first thing `v0.2-mvp`'s REST
+transport would need. Also missing: metrics emission (counters/histograms) as opposed to log lines —
+fine for a demo, not for an on-call dashboard.
 
 ## Open questions
 
-TODO — note any design questions that came up during building that you haven't resolved yet.
-These are good interview talking points: "here's a decision I'm still not sure about and here's
-the trade-off I see."
+Genuine unresolved trade-offs, not settled decisions:
+
+1. **Superseded and exhausted-retries commands share one terminal `Failed` status.** `CommandStatus`
+   deliberately stays at four states (`Pending`, `Delivered`, `Acked`, `Failed` — see the domain
+   model pinned in `CLAUDE.md`), so "desired state changed before this command was acked" and "this
+   command was delivered `MaxAttempts` times and never acked" are indistinguishable from the status
+   alone. An operator debugging "why did this command fail" has to reason from context (was desired
+   state changed around the same time?) rather than reading it off the record. A fifth status, or a
+   `FailureReason` field, would remove the ambiguity — I chose not to add one for `v0.1-core` because
+   it's a hard-to-repeat mistake with the *guarded transition* model (every new status is another
+   row in `CommandStatusTransitions.IsLegal` to get right), and the ambiguity is real but low-cost
+   at this scale.
+2. **The reconciler's gap-to-command mapping is a string convention (`"set:{key}={value}"`), parsed
+   back apart by `Reconciler.FindSuperseded` and `Agent.Apply`.** It works, and keeping `Command`
+   simple (`Action` as a plain string) was deliberate — the domain isn't the point. But it means the
+   parsing logic is duplicated in two places instead of `Command` carrying a structured `(Key,
+   Value)` target directly. I'd revisit this the moment a second action shape (not just `set:`)
+   shows up, which `v0.2-mvp`'s real BitLocker policy will likely force.
+3. **The ack-timeout sweeper is currently something the caller has to remember to invoke** —
+   `ControlPlane.SweepAckTimeouts()` is not itself scheduled; `Warden.Demo` runs it on a
+   `Task.Run` loop, but nothing in `Warden.ControlPlane` enforces that a host actually does this in
+   production. A real deployment needs this made structural (a hosted background service that can't
+   be forgotten) rather than left as "call this periodically" documentation.

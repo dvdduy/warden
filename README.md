@@ -1,5 +1,7 @@
 # Warden
 
+[![CI](https://github.com/dvdduy/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/dvdduy/warden/actions/workflows/ci.yml)
+
 A self-healing Windows endpoint management system — a simulated fleet of devices that continuously reconciles toward a cloud-defined desired state, detects drift, and corrects itself without human intervention.
 
 Built as a portfolio project targeting a **Staff Engineer (.NET / Windows systems)** role. Designed to demonstrate distributed-systems correctness, Windows service engineering, and production-grade thinking — not feature count.
@@ -68,7 +70,7 @@ This repo is built in milestones, each tagged, each small and complete:
 
 | Tag | What it is | Status |
 |---|---|---|
-| `v0.1-core` | Reconciliation engine + simulated agent. The four hard behaviors proven by tests. No UI, no database, no real OS calls. This is the take-home-sized artifact. | 🔨 In progress |
+| `v0.1-core` | Reconciliation engine + simulated agent. The four hard behaviors proven by tests. No UI, no database, no real OS calls. This is the take-home-sized artifact. | ✅ Done |
 | `v0.2-mvp` | One real Windows policy (BitLocker), REST transport, PostgreSQL, bare dashboard. The full compliance loop end-to-end. | ⬜ Planned |
 | `v0.3-ipc` | User-context agent + hardened named-pipe IPC across the System↔User privilege boundary. The highest-signal Windows piece. | ⬜ Planned |
 
@@ -77,9 +79,10 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 
 ## Tech stack
 
-- **C# / .NET 8** — the target role's stack; idiomatic throughout
+- **C# / .NET 10** — the target role's stack; idiomatic throughout
 - **xUnit** — tests focused on failure and concurrency paths
-- **GitHub Actions** — CI on every push
+- **Microsoft.Extensions.Logging** — structured logs correlated by `CommandId` across the agent/control-plane boundary
+- **GitHub Actions** — CI on every push and PR ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
 - **Docker Compose** — one command to run the control plane (added in `v0.2-mvp`)
 
 ## Running it
@@ -87,11 +90,19 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 > `v0.1-core` runs fully in-process — no Docker, no database.
 
 ```bash
-git clone https://github.com/yourusername/warden.git
+git clone https://github.com/dvdduy/warden.git
 cd warden
-dotnet test                          # all tests green
+dotnet test                          # all tests green (unit, failure-path, and concurrency)
 dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
+
+The demo runs four scripted scenarios end-to-end with no human input, each printing what's
+happening as it goes:
+
+1. **Duplicate delivery applies once** — the same command id delivered three times mutates state once.
+2. **No ack → bounded retry → `Failed`** — a command that's never acked redelivers up to `MaxAttempts`, fails cleanly, and the next reconciliation cycle issues a fresh command for the still-open gap.
+3. **Offline → reconnect** — a device that never ran a cycle reconciles to *current* desired state on its first connect, even if that state changed while it was "offline."
+4. **A live fleet** — 40 simulated agents converge against one control plane concurrently, with a colored compliant/non-compliant board and a final `FleetHealth` snapshot.
 
 ## Design decisions
 
@@ -105,4 +116,4 @@ Full reasoning in [`DESIGN.md`](DESIGN.md). The short version:
 
 ---
 
-*Status: `v0.1-core` in progress — following [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md)*
+*Status: `v0.1-core` complete — built session-by-session following [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md). Next up: `v0.2-mvp`.*
