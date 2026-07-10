@@ -37,10 +37,28 @@ public interface ICommandStore
     Command MarkAcked(CommandId id, DateTimeOffset ackedAt);
 
     /// <summary>
-    /// Transitions a command to Failed. Legal from Delivered. A no-op if already Failed.
+    /// Transitions a command to Failed. Legal from Delivered (the ack-timeout sweeper
+    /// exhausting retries) or Pending (superseded by a desired-state change before it
+    /// was ever delivered — see Reconciler.FindSuperseded). A no-op if already Failed.
     /// Throws for any other current status.
     /// </summary>
     Command MarkFailed(CommandId id);
+
+    /// <summary>
+    /// Transitions a Delivered command back to Pending for redelivery, clearing its ack
+    /// deadline. Used by the ack-timeout sweeper when a command's deadline has passed
+    /// and it still has retries left. A no-op if already Pending. Throws for any other
+    /// current status.
+    /// </summary>
+    Command MarkPendingForRedelivery(CommandId id);
+
+    /// <summary>
+    /// All Delivered commands, across every device, whose AckDeadline is at or before
+    /// <paramref name="now"/> — i.e. candidates for the ack-timeout sweeper to redeliver
+    /// or fail. Unlike GetInFlight this is not scoped to one device, since the sweeper
+    /// runs fleet-wide.
+    /// </summary>
+    IReadOnlyList<Command> GetDeliveredPastDeadline(DateTimeOffset now);
 }
 
 /// <summary>

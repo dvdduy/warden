@@ -245,10 +245,10 @@ unless the current one is committed and green.
 - [x] Planning docs in `docs/`
 - [x] `README.md` and `DESIGN.md` in place
 - [x] Solution skeleton (`Warden.slnx`, `src/`, `tests/`)
-- [ ] Session 1 — domain model + `IClock` → `chore: solution skeleton + domain model`
-- [ ] Session 2 — reconciler → `feat: reconciliation engine`
-- [ ] Session 3 — command store → `feat: command store with guarded lifecycle transitions`
-- [ ] Session 4 — agent loop → `feat: agent loop with idempotent command application`
-- [ ] Session 5 — timeout + offline → `feat: ack-timeout redelivery and safe offline reconcile`
+- [x] Session 1 — domain model + `IClock` → `chore: solution skeleton + domain model`
+- [x] Session 2 — reconciler → `feat: reconciliation engine`
+- [x] Session 3 — command store → `feat: command store with guarded lifecycle transitions`
+- [x] Session 4 — agent loop → `feat: agent loop with idempotent command application`
+- [x] Session 5 — timeout + offline → `feat: ack-timeout redelivery and safe offline reconcile`
 - [ ] Session 6 — concurrency + demo → `feat: concurrency test + structured logging + demo runner`
 - [ ] Session 7 — docs + CI → `docs: DESIGN.md + README + CI` then `git tag v0.1-core`

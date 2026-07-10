@@ -76,6 +76,42 @@ public static class Reconciler
     }
 
     /// <summary>
+    /// Finds in-flight (Pending/Delivered) commands whose target value no longer matches
+    /// the current desired state for that setting — i.e. desired state changed after the
+    /// command was issued but before it was acked. These are stale: redelivering or
+    /// acking them would move the device toward a value nobody wants anymore. Pure, like
+    /// Diff — it only *identifies* superseded commands; the caller (the control plane) is
+    /// responsible for actually marking them Failed via ICommandStore and then calling
+    /// Diff again to issue a fresh command for the now-uncovered gap.
+    ///
+    /// A command whose setting key no longer appears in desired at all is left alone —
+    /// removal is out of scope for v0.1-core (see Reconciler.FindGaps).
+    /// </summary>
+    public static IReadOnlyList<CommandId> FindSuperseded(
+        DesiredState desired,
+        IReadOnlyList<Command> inFlight)
+    {
+        var superseded = new List<CommandId>();
+
+        foreach (var command in inFlight)
+        {
+            var parsed = ParseAction(command.Action);
+            if (parsed is null)
+            {
+                continue;
+            }
+
+            var (key, targetValue) = parsed.Value;
+            if (desired.Settings.TryGetValue(key, out var desiredValue) && desiredValue != targetValue)
+            {
+                superseded.Add(command.Id);
+            }
+        }
+
+        return superseded;
+    }
+
+    /// <summary>
     /// Setting keys in desired whose value differs from actual (or is missing from actual).
     /// </summary>
     private static List<(string Key, string DesiredValue)> FindGaps(DesiredState desired, ActualState actual)
@@ -117,9 +153,14 @@ public static class Reconciler
         return keys;
     }
 
-    private static string? ParseSettingKey(string action)
+    private static string? ParseSettingKey(string action) => ParseAction(action)?.Key;
+
+    /// <summary>
+    /// Parses a "set:{key}={value}" action into its key/value pair, or null if it doesn't
+    /// match that shape. The one place this string convention is understood.
+    /// </summary>
+    private static (string Key, string Value)? ParseAction(string action)
     {
-        // Expected shape: "set:{key}={value}"
         const string prefix = "set:";
         if (!action.StartsWith(prefix, StringComparison.Ordinal))
         {
@@ -128,6 +169,11 @@ public static class Reconciler
 
         var withoutPrefix = action[prefix.Length..];
         var equalsIndex = withoutPrefix.IndexOf('=');
-        return equalsIndex < 0 ? null : withoutPrefix[..equalsIndex];
+        if (equalsIndex < 0)
+        {
+            return null;
+        }
+
+        return (withoutPrefix[..equalsIndex], withoutPrefix[(equalsIndex + 1)..]);
     }
 }

@@ -70,6 +70,25 @@ public sealed class InMemoryCommandStore : ICommandStore
             Status = CommandStatus.Failed
         });
 
+    public Command MarkPendingForRedelivery(CommandId id) =>
+        Transition(id, CommandStatus.Pending, current => current with
+        {
+            Status = CommandStatus.Pending,
+            AckDeadline = null
+        });
+
+    public IReadOnlyList<Command> GetDeliveredPastDeadline(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            return _commands.Values
+                .Where(c => c.Status == CommandStatus.Delivered
+                    && c.AckDeadline.HasValue
+                    && c.AckDeadline.Value <= now)
+                .ToList();
+        }
+    }
+
     /// <summary>
     /// Core guarded-transition logic shared by every Mark* method: look up the current
     /// command, decide whether the requested move is a no-op (return unchanged), legal

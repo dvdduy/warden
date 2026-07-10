@@ -239,6 +239,57 @@ public class InMemoryCommandStoreTests
         Assert.Contains(inFlight, c => c.Id == delivered.Id);
     }
 
+    // ---- ack-timeout redelivery / supersede (Session 5) ----
+
+    [Fact]
+    public void MarkPendingForRedelivery_moves_Delivered_back_to_Pending_and_clears_deadline()
+    {
+        var store = new InMemoryCommandStore();
+        var clock = new FakeClock();
+        var command = store.Add(NewPendingCommand(clock));
+        store.MarkDelivered(command.Id, clock.UtcNow.AddSeconds(30));
+
+        var redelivered = store.MarkPendingForRedelivery(command.Id);
+
+        Assert.Equal(CommandStatus.Pending, redelivered.Status);
+        Assert.Null(redelivered.AckDeadline);
+        Assert.Equal(1, redelivered.Attempts); // Attempts is untouched here; MarkDelivered bumps it again next time
+    }
+
+    [Fact]
+    public void MarkFailed_from_Pending_is_legal_for_superseding_an_undelivered_command()
+    {
+        var store = new InMemoryCommandStore();
+        var clock = new FakeClock();
+        var command = store.Add(NewPendingCommand(clock));
+
+        var failed = store.MarkFailed(command.Id);
+
+        Assert.Equal(CommandStatus.Failed, failed.Status);
+    }
+
+    [Fact]
+    public void GetDeliveredPastDeadline_returns_only_Delivered_commands_whose_deadline_has_passed()
+    {
+        var store = new InMemoryCommandStore();
+        var clock = new FakeClock();
+
+        var overdue = store.Add(NewPendingCommand(clock, "set:featureA=on"));
+        store.MarkDelivered(overdue.Id, clock.UtcNow.AddSeconds(30));
+
+        var notYetOverdue = store.Add(NewPendingCommand(clock, "set:featureB=on"));
+        store.MarkDelivered(notYetOverdue.Id, clock.UtcNow.AddSeconds(60));
+
+        var stillPending = store.Add(NewPendingCommand(clock, "set:featureC=on"));
+
+        clock.Advance(TimeSpan.FromSeconds(45));
+
+        var pastDeadline = store.GetDeliveredPastDeadline(clock.UtcNow);
+
+        var result = Assert.Single(pastDeadline);
+        Assert.Equal(overdue.Id, result.Id);
+    }
+
     // ---- concurrency ----
 
     [Fact]

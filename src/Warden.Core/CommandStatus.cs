@@ -11,6 +11,7 @@ namespace Warden.Core;
 ///   Delivered -> Acked                  (agent confirms application)
 ///   Delivered -> Pending                (ack-timeout sweeper redelivers, Session 5)
 ///   Delivered -> Failed                 (ack-timeout sweeper exhausts retries, Session 5)
+///   Pending   -> Failed                 (superseded: desired state changed before delivery, Session 5)
 ///
 /// Acked and Failed are terminal: no transition leaves them. Re-applying the *same*
 /// transition to a terminal state (e.g. acking an already-Acked command) is a no-op,
@@ -43,6 +44,7 @@ public static class CommandStatusTransitions
         (CommandStatus.Delivered, CommandStatus.Acked) => true,
         (CommandStatus.Delivered, CommandStatus.Pending) => true,
         (CommandStatus.Delivered, CommandStatus.Failed) => true,
+        (CommandStatus.Pending, CommandStatus.Failed) => true,
         _ => false
     };
 

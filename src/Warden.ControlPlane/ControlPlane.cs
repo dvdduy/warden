@@ -15,12 +15,18 @@ public sealed class ControlPlane
     private readonly IDeviceRepository _devices;
     private readonly ICommandStore _commands;
     private readonly IClock _clock;
+    private readonly AckTimeoutSweeper _sweeper;
 
-    public ControlPlane(IDeviceRepository devices, ICommandStore commands, IClock clock)
+    public ControlPlane(
+        IDeviceRepository devices,
+        ICommandStore commands,
+        IClock clock,
+        int maxDeliveryAttempts = AckTimeoutSweeper.DefaultMaxAttempts)
     {
         _devices = devices;
         _commands = commands;
         _clock = clock;
+        _sweeper = new AckTimeoutSweeper(commands, clock, maxDeliveryAttempts);
     }
 
     /// <summary>Registers a device (idempotent — see IDeviceRepository.Register).</summary>
@@ -32,11 +38,14 @@ public sealed class ControlPlane
         _devices.SetDesiredState(id, desired);
 
     /// <summary>
-    /// The core cycle: record the device's self-reported actual state, then diff it
-    /// against desired state (respecting in-flight commands) and hand back at most one
-    /// newly-issued Pending command per gap. Does NOT mark anything Delivered — that
-    /// happens when the agent actually receives it (see FetchCommand), keeping "a
-    /// command exists" and "a command was delivered" as distinct, observable events.
+    /// The core cycle: record the device's self-reported actual state, supersede any
+    /// in-flight command whose target no longer matches current desired state, then diff
+    /// the remaining gaps (respecting what's still in flight) and hand back everything
+    /// the agent needs to act on this cycle: commands still sitting Pending (redelivery —
+    /// e.g. the ack-timeout sweeper put them back) plus any newly-issued ones. Does NOT
+    /// mark anything Delivered — that happens when the agent actually receives it (see
+    /// Agent.Apply), keeping "a command exists" and "a command was delivered" as distinct,
+    /// observable events.
     /// </summary>
     public IReadOnlyList<Command> ReportStateAndGetNewCommands(DeviceId id, ActualState actual)
     {
@@ -45,15 +54,38 @@ public sealed class ControlPlane
         var desired = _devices.GetDesiredState(id);
         var inFlight = _commands.GetInFlight(id);
 
-        var newCommands = Reconciler.Diff(id, desired, actual, inFlight, _clock);
+        var superseded = Reconciler.FindSuperseded(desired, inFlight);
+        foreach (var commandId in superseded)
+        {
+            // Terminal Failed, same as an exhausted-retries command — v0.1-core's
+            // CommandStatus deliberately stays at four states (see CLAUDE.md), so
+            // "superseded by newer desired state" and "gave up after retries" share
+            // the same terminal status rather than growing a fifth.
+            _commands.MarkFailed(commandId);
+        }
 
+        var stillInFlight = superseded.Count == 0
+            ? inFlight
+            : inFlight.Where(c => !superseded.Contains(c.Id)).ToList();
+
+        var pendingRedelivery = stillInFlight.Where(c => c.Status == CommandStatus.Pending).ToList();
+
+        var newCommands = Reconciler.Diff(id, desired, actual, stillInFlight, _clock);
         foreach (var command in newCommands)
         {
             _commands.Add(command);
         }
 
-        return newCommands;
+        return pendingRedelivery.Concat(newCommands).ToList();
     }
+
+    /// <summary>
+    /// Runs one ack-timeout sweep across every device's Delivered commands: redelivers
+    /// (moves back to Pending) while attempts remain, else marks Failed. Driven by the
+    /// injected IClock, so tests advance a FakeClock instead of waiting for real time —
+    /// see AckTimeoutSweeper.
+    /// </summary>
+    public IReadOnlyList<Command> SweepAckTimeouts() => _sweeper.SweepOnce();
 
     /// <summary>
     /// Marks a command Delivered (the agent is now being handed it) and returns the
