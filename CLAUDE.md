@@ -250,5 +250,5 @@ unless the current one is committed and green.
 - [x] Session 3 — command store → `feat: command store with guarded lifecycle transitions`
 - [x] Session 4 — agent loop → `feat: agent loop with idempotent command application`
 - [x] Session 5 — timeout + offline → `feat: ack-timeout redelivery and safe offline reconcile`
-- [ ] Session 6 — concurrency + demo → `feat: concurrency test + structured logging + demo runner`
+- [x] Session 6 — concurrency + demo → `feat: concurrency test + structured logging + demo runner`
 - [ ] Session 7 — docs + CI → `docs: DESIGN.md + README + CI` then `git tag v0.1-core`

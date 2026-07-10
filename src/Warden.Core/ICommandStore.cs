@@ -59,6 +59,13 @@ public interface ICommandStore
     /// runs fleet-wide.
     /// </summary>
     IReadOnlyList<Command> GetDeliveredPastDeadline(DateTimeOffset now);
+
+    /// <summary>
+    /// Every command in the store, across every device and every status. Used for
+    /// fleet-wide observability (see ControlPlane.GetHealthSnapshot) — not for anything
+    /// on the hot path, so a full scan is an acceptable cost at v0.1-core's scale.
+    /// </summary>
+    IReadOnlyList<Command> GetAll();
 }
 
 /// <summary>

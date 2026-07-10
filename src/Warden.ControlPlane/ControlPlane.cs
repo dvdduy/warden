@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Warden.Core;
 
 namespace Warden.ControlPlane;
@@ -9,6 +11,10 @@ namespace Warden.ControlPlane;
 /// device/desired-state storage. Keeping it this thin is deliberate: the interesting
 /// logic stays pure and unit-testable in Warden.Core; this class is what a REST
 /// controller would call in v0.2-mvp.
+///
+/// Every log line here is keyed on CommandId — that's the correlation id that lets an
+/// operator (or a test) trace one command's whole lifecycle across the agent/control-plane
+/// boundary, from issue through delivery to ack (or failure).
 /// </summary>
 public sealed class ControlPlane
 {
@@ -16,17 +22,23 @@ public sealed class ControlPlane
     private readonly ICommandStore _commands;
     private readonly IClock _clock;
     private readonly AckTimeoutSweeper _sweeper;
+    private readonly ILogger<ControlPlane> _logger;
 
     public ControlPlane(
         IDeviceRepository devices,
         ICommandStore commands,
         IClock clock,
-        int maxDeliveryAttempts = AckTimeoutSweeper.DefaultMaxAttempts)
+        int maxDeliveryAttempts = AckTimeoutSweeper.DefaultMaxAttempts,
+        ILogger<ControlPlane>? logger = null,
+        ILoggerFactory? loggerFactory = null)
     {
         _devices = devices;
         _commands = commands;
         _clock = clock;
-        _sweeper = new AckTimeoutSweeper(commands, clock, maxDeliveryAttempts);
+        _logger = logger ?? NullLogger<ControlPlane>.Instance;
+        _sweeper = new AckTimeoutSweeper(
+            commands, clock, maxDeliveryAttempts,
+            loggerFactory?.CreateLogger<AckTimeoutSweeper>());
     }
 
     /// <summary>Registers a device (idempotent — see IDeviceRepository.Register).</summary>
@@ -62,6 +74,9 @@ public sealed class ControlPlane
             // "superseded by newer desired state" and "gave up after retries" share
             // the same terminal status rather than growing a fifth.
             _commands.MarkFailed(commandId);
+            _logger.LogWarning(
+                "Command {CommandId} for device {DeviceId} superseded — desired state changed before it was acked",
+                commandId, id);
         }
 
         var stillInFlight = superseded.Count == 0
@@ -74,6 +89,9 @@ public sealed class ControlPlane
         foreach (var command in newCommands)
         {
             _commands.Add(command);
+            _logger.LogInformation(
+                "Command {CommandId} issued for device {DeviceId}: {Action}",
+                command.Id, id, command.Action);
         }
 
         return pendingRedelivery.Concat(newCommands).ToList();
@@ -92,17 +110,43 @@ public sealed class ControlPlane
     /// updated record. Guarded/idempotent via ICommandStore — delivering an
     /// already-Delivered command again is a no-op, not a double-increment.
     /// </summary>
-    public Command MarkDelivered(CommandId commandId, TimeSpan ackDeadlineFromNow) =>
-        _commands.MarkDelivered(commandId, _clock.UtcNow + ackDeadlineFromNow);
+    public Command MarkDelivered(CommandId commandId, TimeSpan ackDeadlineFromNow)
+    {
+        var delivered = _commands.MarkDelivered(commandId, _clock.UtcNow + ackDeadlineFromNow);
+        _logger.LogDebug(
+            "Command {CommandId} marked Delivered (attempt {Attempts})",
+            commandId, delivered.Attempts);
+        return delivered;
+    }
 
     /// <summary>
     /// Records the agent's acknowledgement that a command was applied. Idempotent —
     /// duplicate acks collapse to a no-op via ICommandStore (Session 3).
     /// </summary>
-    public Command Ack(CommandId commandId) =>
-        _commands.MarkAcked(commandId, _clock.UtcNow);
+    public Command Ack(CommandId commandId)
+    {
+        var acked = _commands.MarkAcked(commandId, _clock.UtcNow);
+        _logger.LogInformation("Command {CommandId} acked", commandId);
+        return acked;
+    }
 
     /// <summary>All commands currently Pending or Delivered for a device.</summary>
     public IReadOnlyList<Command> GetInFlightCommands(DeviceId id) =>
         _commands.GetInFlight(id);
+
+    /// <summary>
+    /// A point-in-time fleet-wide health snapshot — the simple health signal the course
+    /// calls for. Cheap enough to poll (a full scan over an in-memory dictionary) at
+    /// v0.1-core's scale; a real implementation would maintain running counters instead
+    /// of scanning at query time once the store is backed by a database.
+    /// </summary>
+    public FleetHealth GetHealthSnapshot()
+    {
+        var all = _commands.GetAll();
+        return new FleetHealth(
+            PendingCommands: all.Count(c => c.Status == CommandStatus.Pending),
+            DeliveredCommands: all.Count(c => c.Status == CommandStatus.Delivered),
+            AckedCommands: all.Count(c => c.Status == CommandStatus.Acked),
+            FailedCommands: all.Count(c => c.Status == CommandStatus.Failed));
+    }
 }

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Warden.Core;
 
 namespace Warden.ControlPlane;
@@ -18,12 +20,18 @@ public sealed class AckTimeoutSweeper
     private readonly ICommandStore _commands;
     private readonly IClock _clock;
     private readonly int _maxAttempts;
+    private readonly ILogger<AckTimeoutSweeper> _logger;
 
-    public AckTimeoutSweeper(ICommandStore commands, IClock clock, int maxAttempts = DefaultMaxAttempts)
+    public AckTimeoutSweeper(
+        ICommandStore commands,
+        IClock clock,
+        int maxAttempts = DefaultMaxAttempts,
+        ILogger<AckTimeoutSweeper>? logger = null)
     {
         _commands = commands;
         _clock = clock;
         _maxAttempts = maxAttempts;
+        _logger = logger ?? NullLogger<AckTimeoutSweeper>.Instance;
     }
 
     /// <summary>
@@ -38,10 +46,22 @@ public sealed class AckTimeoutSweeper
 
         foreach (var command in overdue)
         {
-            var updated = command.Attempts < _maxAttempts
-                ? _commands.MarkPendingForRedelivery(command.Id)
-                : _commands.MarkFailed(command.Id);
-            results.Add(updated);
+            if (command.Attempts < _maxAttempts)
+            {
+                var redelivered = _commands.MarkPendingForRedelivery(command.Id);
+                _logger.LogWarning(
+                    "Command {CommandId} ack timeout — redelivering (attempt {Attempts}/{MaxAttempts})",
+                    command.Id, command.Attempts, _maxAttempts);
+                results.Add(redelivered);
+            }
+            else
+            {
+                var failed = _commands.MarkFailed(command.Id);
+                _logger.LogError(
+                    "Command {CommandId} exhausted {MaxAttempts} delivery attempts — marking Failed",
+                    command.Id, _maxAttempts);
+                results.Add(failed);
+            }
         }
 
         return results;

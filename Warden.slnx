@@ -3,6 +3,7 @@
     <Project Path="src/Warden.Agent/Warden.Agent.csproj" />
     <Project Path="src/Warden.ControlPlane/Warden.ControlPlane.csproj" />
     <Project Path="src/Warden.Core/Warden.Core.csproj" />
+    <Project Path="src/Warden.Demo/Warden.Demo.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Warden.Core.Tests/Warden.Core.Tests.csproj" />

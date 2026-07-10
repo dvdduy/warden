@@ -49,6 +49,14 @@ public sealed class InMemoryCommandStore : ICommandStore
         }
     }
 
+    public IReadOnlyList<Command> GetAll()
+    {
+        lock (_gate)
+        {
+            return _commands.Values.ToList();
+        }
+    }
+
     public Command MarkDelivered(CommandId id, DateTimeOffset ackDeadline) =>
         Transition(id, CommandStatus.Delivered, current => current with
         {
