@@ -47,22 +47,35 @@ The interesting engineering is not the happy path. It is what happens when thing
 
 These four behaviors are the core of the system. Everything else is scaffolding around them.
 
-## Architecture (the short version)
-
-Three components, one dependency rule: `Warden.Core` has no I/O — the entire reconciliation and command logic is a pure library, testable without HTTP or a database.
+## Architecture
 
 ```
-Warden.Agent          IControlPlaneClient seam          Warden.ControlPlane
-(simulated device) ──────────────────────────────────▶  (stores + sweeper)
-        │                                                       │
-        └──────────── depends on ──── Warden.Core ─────────────┘
-                                   (domain + reconciler)
-                                          ▲
-                                  Warden.Core.Tests
-                                  (failure paths)
+Session N (interactive user)
+┌──────────────────┐
+│ Warden.UserAgent │
+└──────────────────┘
+          │
+          │  named pipe -- ACL'd + peer-verified
+          ▼
+┌────────────────────────────────┐
+│ Warden.Agent                   │
+│ (Windows Service, LocalSystem) │
+└────────────────────────────────┘
+                 │
+                 │  REST (IControlPlaneClient)
+                 ▼
+┌─────────────────────────┐
+│ Warden.ControlPlane.Api │
+│ (ASP.NET Core)          │
+└─────────────────────────┘
+             │
+             ▼
+┌────────────┐
+│ PostgreSQL │
+└────────────┘
 ```
 
-The `IControlPlaneClient` seam is why the transport is swappable — in-process or REST — without touching `Core`.
+One dependency rule holds it together: `Warden.Core` has no I/O — the entire reconciliation and command logic is a pure library, testable without HTTP or a database. `Warden.Agent` and `Warden.ControlPlane` both depend on it and nothing else touches it directly; the `IControlPlaneClient` seam is why the REST boundary is swappable without touching `Core`.
 
 ## Tech stack
 
