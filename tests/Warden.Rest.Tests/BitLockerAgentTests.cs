@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Warden.Agent;
+using Warden.ControlPlane;
 using Warden.Core;
 using Xunit;
 
@@ -85,6 +86,50 @@ public class BitLockerAgentTests
 
         Assert.Equal(1, client.MarkDeliveredCallCount);
         Assert.Equal(0, client.AckCallCount);
+    }
+
+    [Fact]
+    public void Fake_bitlocker_mode_drifts_then_remediates_to_compliant_without_manage_bde()
+    {
+        var deviceId = new DeviceId("dev-fake-bitlocker");
+        var clock = new SystemClock();
+        var devices = new InMemoryDeviceRepository();
+        var commands = new InMemoryCommandStore();
+        var controlPlane = new Warden.ControlPlane.ControlPlane(devices, commands, clock);
+        controlPlane.RegisterDevice(deviceId, "LAPTOP-FAKE");
+        controlPlane.SetDesiredState(deviceId, new DesiredState(new Dictionary<string, string>
+        {
+            [BitLockerPolicy.EnabledKey] = "true"
+        }));
+
+        var fakeBitLocker = new FakeBitLockerState(Options.Create(new AgentServiceOptions
+        {
+            DeviceId = deviceId.Value,
+            Hostname = "LAPTOP-FAKE",
+            UseFakeBitLocker = true,
+            FakeBitLockerEnabled = false
+        }));
+        var worker = new ReportingAgentWorker(
+            new InProcessControlPlaneClient(controlPlane),
+            fakeBitLocker,
+            fakeBitLocker,
+            Options.Create(new AgentServiceOptions
+            {
+                DeviceId = deviceId.Value,
+                Hostname = "LAPTOP-FAKE"
+            }),
+            NullLogger<ReportingAgentWorker>.Instance);
+
+        worker.RunOnce();
+
+        Assert.True(fakeBitLocker.Enabled);
+        Assert.Empty(controlPlane.GetInFlightCommands(deviceId));
+        Assert.Equal("false", devices.Get(deviceId)!.Actual.Settings[BitLockerPolicy.EnabledKey]);
+
+        worker.RunOnce();
+
+        Assert.Empty(controlPlane.GetInFlightCommands(deviceId));
+        Assert.Equal("true", devices.Get(deviceId)!.Actual.Settings[BitLockerPolicy.EnabledKey]);
     }
 
     private sealed class StaticActualStateProvider : IActualStateProvider

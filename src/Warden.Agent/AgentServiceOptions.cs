@@ -11,4 +11,8 @@ public sealed class AgentServiceOptions
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(60);
 
     public string BitLockerVolume { get; set; } = "C:";
+
+    public bool UseFakeBitLocker { get; set; }
+
+    public bool FakeBitLockerEnabled { get; set; }
 }

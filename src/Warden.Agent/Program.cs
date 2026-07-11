@@ -10,8 +10,23 @@ builder.Services.Configure<AgentServiceOptions>(builder.Configuration.GetSection
 builder.Services.AddWindowsService(options => options.ServiceName = "Warden Agent");
 
 builder.Services.AddSingleton<ISystemCommandRunner, ProcessSystemCommandRunner>();
-builder.Services.AddSingleton<IActualStateProvider, BitLockerActualStateProvider>();
-builder.Services.AddSingleton<ICommandExecutor, BitLockerCommandExecutor>();
+builder.Services.AddSingleton<FakeBitLockerState>();
+builder.Services.AddSingleton<IActualStateProvider>(services =>
+{
+    var options = services.GetRequiredService<IOptions<AgentServiceOptions>>().Value;
+    return options.UseFakeBitLocker
+        ? services.GetRequiredService<FakeBitLockerState>()
+        : services.GetRequiredService<BitLockerActualStateProvider>();
+});
+builder.Services.AddSingleton<ICommandExecutor>(services =>
+{
+    var options = services.GetRequiredService<IOptions<AgentServiceOptions>>().Value;
+    return options.UseFakeBitLocker
+        ? services.GetRequiredService<FakeBitLockerState>()
+        : services.GetRequiredService<BitLockerCommandExecutor>();
+});
+builder.Services.AddSingleton<BitLockerActualStateProvider>();
+builder.Services.AddSingleton<BitLockerCommandExecutor>();
 builder.Services.AddSingleton<IControlPlaneClient>(services =>
 {
     var options = services.GetRequiredService<IOptions<AgentServiceOptions>>().Value;
