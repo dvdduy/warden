@@ -72,9 +72,10 @@ This repo is built in milestones, each tagged, each small and complete:
 |---|---|---|
 | `v0.1-core` | Reconciliation engine + simulated agent. The four hard behaviors proven by tests. No UI, no database, no real OS calls. This is the take-home-sized artifact. | ✅ Done |
 | `v0.2-mvp` | One real Windows policy (BitLocker), REST transport, PostgreSQL, bare dashboard. The full compliance loop end-to-end. | ✅ Done |
-| `v0.3-ipc` | User-context agent + hardened named-pipe IPC across the System↔User privilege boundary. The highest-signal Windows piece. | ⬜ Planned |
+| `v0.3-ipc` | User-context agent + hardened named-pipe IPC across the System↔User privilege boundary. The highest-signal Windows piece. | ✅ Done |
 
 See [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md) for the session-by-session build plan for `v0.1-core`.
+See [`docs/WARDEN_COURSE_IPC.md`](docs/WARDEN_COURSE_IPC.md) and [`docs/WARDEN_IPC.md`](docs/WARDEN_IPC.md) for the `v0.3-ipc` Windows IPC milestone.
 See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise spec and rubric this is built against.
 
 ## Tech stack
@@ -131,6 +132,46 @@ and should be run elevated or as the Windows Service/LocalSystem. (The agent log
 at startup if fake mode is on — it's a config flag, not a build switch, and should never be left
 set on a real managed device.)
 
+### v0.3-ipc demo script
+
+`v0.3-ipc` adds the user-context boundary: `Warden.Agent` can keep running as the service-side
+remediator, while `Warden.UserAgent` runs in the logged-on user's desktop session and receives
+notifications over a hardened named pipe.
+
+For the safe local demo, keep using fake BitLocker mode:
+
+```powershell
+$env:Agent__UseFakeBitLocker = "true"
+$env:Agent__FakeBitLockerEnabled = "false"
+$env:Agent__ControlPlaneBaseAddress = "http://localhost:5000"
+dotnet run --project src/Warden.Agent
+```
+
+Demo flow:
+
+1. Start the `v0.2-mvp` compose stack and open `http://localhost:5000/dashboard`.
+2. Start `Warden.Agent` in fake BitLocker mode.
+3. Let the first cycle report `bitlocker.enabled=false`; the control plane issues the normal
+   remediation command.
+4. The agent remediates, acks, and routes `ComplianceChanged { Rule = bitlocker.enabled,
+   Status = Compliant }` over the session pipe.
+5. `Warden.UserAgent` receives the message and attempts a Windows toast in the interactive session.
+6. Kill the `Warden.UserAgent` process; the service detects the exit and relaunches it with bounded
+   backoff.
+7. Re-trigger the drift/remediation flow and confirm the relaunched user-agent still receives the
+   next compliance-change notification.
+
+Security checks to show alongside the demo:
+
+```powershell
+dotnet test tests\Warden.Ipc.Tests\Warden.Ipc.Tests.csproj
+dotnet test tests\Warden.Agent.Tests\Warden.Agent.Tests.csproj
+```
+
+The IPC tests prove ping/pong framing, service-pushed compliance messages, ACL creation, and
+peer-session rejection. The agent tests prove per-session lifecycle, respawn after unexpected
+user-agent exit, bounded backoff, and crash-loop circuit breaking.
+
 ## Design decisions
 
 Full reasoning in [`DESIGN.md`](DESIGN.md). The short version:
@@ -143,4 +184,4 @@ Full reasoning in [`DESIGN.md`](DESIGN.md). The short version:
 
 ---
 
-*Status: `v0.2-mvp` complete — built on the `v0.1-core` correctness model with PostgreSQL, REST, BitLocker read/remediation, and a bare dashboard.*
+*Status: `v0.3-ipc` complete — the `v0.2-mvp` compliance loop now has a hardened per-session user-agent boundary for desktop notifications.*

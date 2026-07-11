@@ -1,6 +1,6 @@
 # DESIGN.md — Warden
 
-> **Status:** `v0.1-core` and `v0.2-mvp` complete. Written incrementally as each session landed
+> **Status:** `v0.1-core`, `v0.2-mvp`, and `v0.3-ipc` complete. Written incrementally as each session landed
 > rather than backfilled at the end — the empirical sections reflect what tests and integration
 > work actually showed, not speculation.
 
@@ -14,7 +14,8 @@ that makes drift visible within one polling cycle and corrects it without human 
 
 `v0.1-core` proved the correctness model in-process with a simulated device. `v0.2-mvp` keeps
 that core unchanged while swapping in PostgreSQL, REST, a real BitLocker read/remediation path,
-and a bare dashboard.
+and a bare dashboard. `v0.3-ipc` keeps the command pipeline unchanged and adds the Windows-only
+System-to-user boundary needed for desktop-session work.
 
 ---
 
@@ -114,6 +115,76 @@ then reports newly observed BitLocker state on the next poll. In fake mode this 
 That timing is a feature of the real domain, not a bug in reconciliation. Compliance is based on
 observed state, not on wishfully assuming the command's effect is visible immediately.
 
+### 9. `v0.3-ipc`: user-context work crosses a named-pipe boundary
+
+`Warden.Agent` is designed to run as a Windows Service under `LocalSystem`. That is the right
+context for reading and remediating BitLocker, but it is the wrong context for user-facing desktop
+work. Since services run in Session 0, they cannot reliably or safely show UI in an interactive
+user's session. `v0.3-ipc` therefore adds a separate `Warden.UserAgent` process launched into each
+logged-on session.
+
+The communication channel is a per-session named pipe:
+
+- Pipe name: `WardenIpc-{SessionId}`.
+- Service side: `Warden.Agent`.
+- User side: `Warden.UserAgent` for that same Windows session.
+- Protocol: length-prefixed JSON `PipeMessage` values.
+- First real payload: `ComplianceChanged { Rule, Status }`.
+
+The compliance notification is not a parallel reconciliation system. It is a side effect of the
+existing report/remediate/ack flow: after a successful local command execution and ack, the agent
+enqueues one `ComplianceChanged` message for the connected user-agent session. The actual source of
+truth remains the control plane's desired-vs-actual comparison and command lifecycle.
+
+### 10. IPC security model: ACL plus peer verification
+
+The named pipe is hardened in two layers.
+
+**Layer 1: OS ACL.** `WardenPipeSecurity.Create` builds a pipe ACL that allows `LocalSystem` and the
+specific user SID for the target session, while explicitly denying broad principals such as
+`Everyone` and `Authenticated Users`. This keeps unrelated local processes from opening the pipe in
+the first place.
+
+**Layer 2: peer verification.** An ACL says which principals may connect; it does not prove the
+connection is the exact session instance the service intended to serve. After a client connects,
+the service calls `GetNamedPipeClientProcessId`, resolves that process to a Windows session id, and
+rejects the connection if it does not match the pipe's expected session id. That check catches the
+case where an ACL is technically satisfiable but the peer is still not the user-agent instance this
+pipe belongs to.
+
+**Why named pipes instead of gRPC or localhost HTTP:** this boundary is local-only and Windows-only.
+Named pipes avoid opening a network listener, inherit the Windows ACL model directly, and map cleanly
+to "which local principals can talk to this service." A localhost HTTP endpoint would need its own
+authentication story to recover what named-pipe security gives us natively.
+
+**What this stops:** a different user session or unprivileged local process cannot connect to the
+service pipe and impersonate the user-agent for that session; a same-user process in a different
+session is rejected by the peer session check.
+
+**What this does not stop:** a local administrator can still tamper with processes, binaries, tokens,
+or service configuration. `v0.3-ipc` also does not add code signing, protected process light, device
+attestation, or full anti-kill tamper protection. The security claim is deliberately narrower: the
+normal local privilege boundary between `LocalSystem` service code and a specific interactive user
+session is explicit, ACL'd, peer-verified, and tested.
+
+### 11. IPC lifecycle and self-healing
+
+Session changes are first-class because a real Windows endpoint can have more than one active
+session via RDP or fast user switching. `WardenWindowsService` receives
+`SERVICE_CONTROL_SESSIONCHANGE` and forwards logon/logoff events to `SessionAgentManager`, which
+maintains one user-agent process and one pipe loop per session.
+
+The IPC boundary is also self-healing:
+
+- If the user-agent exits unexpectedly, the service notices through the process wait handle.
+- The session is relaunched after a bounded backoff.
+- Rapid repeated exits inside a configured window open a per-session circuit breaker instead of
+  respawning forever.
+- A later healthy period resets the backoff window.
+
+This mirrors the command pipeline's bounded-retry philosophy: retries are expected, but infinite
+hope is not a design.
+
 ---
 
 ## The four hard behaviors — design
@@ -167,6 +238,8 @@ Warden.ControlPlane    hosts Core; in-memory stores; sweeper background service
 Warden.Agent           simulated device loop; IControlPlaneClient consumer
 Warden.Demo            console runner: N agents, live reconciliation output
 Warden.Core.Tests      unit + integration tests; all failure and concurrency paths
+Warden.Ipc             named-pipe protocol, ACL, and peer verification
+Warden.UserAgent       per-session user-context notification process
 ```
 
 Dependency rule: `Core` references nothing. `ControlPlane` and `Agent` reference `Core`.
@@ -253,18 +326,14 @@ clearer. At 1,000,000 devices, in order of what breaks first:
 | PostgreSQL | Persistence is not needed to prove the reconciliation model | `v0.2-mvp` |
 | Dashboard / UI | Not graded; wrong thing to spend time on | `v0.2-mvp` |
 | Multi-tenancy | Complexity without payoff until the model is proven | `v0.3+` |
-| Named-pipe IPC / User-context agent | The highest-signal Windows piece — deserves its own milestone | `v0.3-ipc` |
 | SignalR / real-time push | Polling is correct and sufficient for the correctness story | `v0.3+` |
 
 ---
 
-## What I'd do next (beyond `v0.2-mvp`)
+## What I'd do next (beyond `v0.3-ipc`)
 
 In roadmap order:
 
-- **`v0.3-ipc`**: the user-context agent and hardened named-pipe IPC across the System↔User privilege
-  boundary. The highest-Windows-signal piece of this whole project, deliberately deferred until the
-  correctness model underneath it is proven.
 - **Real-time push (SignalR)**, a second policy beyond BitLocker, and multi-tenancy — once the
   single-policy, polling-based loop is validated end-to-end with real devices.
 - **Distributed tracing** (see Observability notes below) once there's a real network hop to trace
