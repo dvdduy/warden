@@ -9,6 +9,7 @@ public sealed class ReportingAgentWorker : BackgroundService
 {
     private readonly IControlPlaneClient _client;
     private readonly IActualStateProvider _actualStateProvider;
+    private readonly ICommandExecutor _commandExecutor;
     private readonly AgentServiceOptions _options;
     private readonly ILogger<ReportingAgentWorker> _logger;
     private bool _registered;
@@ -16,11 +17,13 @@ public sealed class ReportingAgentWorker : BackgroundService
     public ReportingAgentWorker(
         IControlPlaneClient client,
         IActualStateProvider actualStateProvider,
+        ICommandExecutor commandExecutor,
         IOptions<AgentServiceOptions> options,
         ILogger<ReportingAgentWorker> logger)
     {
         _client = client;
         _actualStateProvider = actualStateProvider;
+        _commandExecutor = commandExecutor;
         _options = options.Value;
         _logger = logger;
     }
@@ -37,12 +40,30 @@ public sealed class ReportingAgentWorker : BackgroundService
             _options.DeviceId,
             string.Join(", ", actual.Settings.Select(kv => $"{kv.Key}={kv.Value}")));
 
-        if (commands.Count > 0)
+        foreach (var command in commands)
         {
-            _logger.LogWarning(
-                "Read-only BitLocker session received {Count} command(s): {CommandIds}. Remediation lands in MVP session 4.",
-                commands.Count,
-                string.Join(",", commands.Select(c => c.Id.Value)));
+            try
+            {
+                _client.MarkDelivered(command.Id);
+                _logger.LogInformation(
+                    "Command {CommandId} marked delivered; executing {Action}",
+                    command.Id,
+                    command.Action);
+
+                _commandExecutor.Execute(command);
+                _client.Ack(command.Id);
+
+                _logger.LogInformation(
+                    "Command {CommandId} executed and acked",
+                    command.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Command {CommandId} failed during local execution and was left unacked for retry",
+                    command.Id);
+            }
         }
     }
 
