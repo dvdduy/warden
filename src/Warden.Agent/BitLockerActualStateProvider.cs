@@ -29,11 +29,10 @@ public sealed class BitLockerActualStateProvider : IActualStateProvider
 
     private string RunManageBdeStatus()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new PlatformNotSupportedException("BitLocker status can only be queried on Windows.");
-        }
-
+        // No OperatingSystem.IsWindows() guard here -- that would make this class
+        // untestable with a fake ISystemCommandRunner on any non-Windows dev/CI machine,
+        // for a check that's redundant anyway: on a platform without manage-bde, starting
+        // the real process (ProcessSystemCommandRunner) already fails with a clear error.
         var result = _commandRunner.Run("manage-bde", new[] { "-status", _volume });
         if (result.ExitCode != 0)
         {

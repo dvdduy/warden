@@ -20,10 +20,18 @@ public sealed class ProcessSystemCommandRunner : ISystemCommandRunner
             throw new InvalidOperationException($"Failed to start {fileName}.");
         }
 
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+        // Start draining both streams concurrently before waiting for exit. Reading them
+        // fully one after another (stdout then stderr) can deadlock if the child writes
+        // enough to *both* streams to fill an OS pipe buffer: the child blocks writing to
+        // whichever stream isn't being read yet, and the parent blocks waiting for the
+        // stream it's on to reach EOF -- which never happens because the child never gets
+        // to exit.
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
 
-        return new CommandResult(process.ExitCode, output, error);
+        process.WaitForExit();
+        Task.WaitAll(outputTask, errorTask);
+
+        return new CommandResult(process.ExitCode, outputTask.Result, errorTask.Result);
     }
 }

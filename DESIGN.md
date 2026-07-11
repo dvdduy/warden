@@ -322,8 +322,12 @@ Genuine unresolved trade-offs, not settled decisions:
    parsing logic is duplicated in two places instead of `Command` carrying a structured `(Key,
    Value)` target directly. I'd revisit this the moment a second action shape (not just `set:`)
    shows up beyond the current `set:bitlocker.enabled=true` / `enable-bitlocker` pair.
-3. **The ack-timeout sweeper is currently something the caller has to remember to invoke** —
-   `ControlPlane.SweepAckTimeouts()` is not itself scheduled; `Warden.Demo` runs it on a
-   `Task.Run` loop, but nothing in `Warden.ControlPlane` enforces that a host actually does this in
-   production. A real deployment needs this made structural (a hosted background service that can't
-   be forgotten) rather than left as "call this periodically" documentation.
+3. ~~The ack-timeout sweeper is currently something the caller has to remember to invoke~~ —
+   **resolved.** This was a real gap, not just a theoretical one: `Warden.ControlPlane.Api` shipped
+   without anything calling `ControlPlane.SweepAckTimeouts()`, so a command that was `Delivered` but
+   never acked would sit there forever in the actual deployed stack — hard behavior #4 was proven by
+   tests and by `Warden.Demo`, but not actually running in the API host. Fixed by
+   `AckTimeoutSweeperHostedService`, a `BackgroundService` registered in `Program.cs` that sweeps
+   every 10 seconds and logs (rather than crashes) on a failed sweep. `ICommandStore`/
+   `IDeviceRepository` still make it possible to bypass this the same way a future host could — the
+   interface doesn't *enforce* scheduling — but the one host that matters now does it by default.

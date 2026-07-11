@@ -96,6 +96,22 @@ public sealed class PostgresDeviceRepository : IDeviceRepository
         return reader.Read() ? ReadDevice(reader) : null;
     }
 
+    public IReadOnlyList<Device> GetAll()
+    {
+        using var connection = _dataSource.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT id, hostname, actual_state, last_seen FROM devices ORDER BY hostname";
+
+        var devices = new List<Device>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            devices.Add(ReadDevice(reader));
+        }
+
+        return devices;
+    }
+
     private static string SerializeSettings(IReadOnlyDictionary<string, string> settings) =>
         JsonSerializer.Serialize(settings);
 

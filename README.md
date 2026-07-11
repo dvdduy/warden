@@ -96,6 +96,14 @@ dotnet test                          # all tests green (unit, failure-path, and 
 dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
 
+`Warden.Demo` runs four scripted scenarios end-to-end with no human input, each printing what's
+happening as it goes:
+
+1. **Duplicate delivery applies once** — the same command id delivered three times mutates state once.
+2. **No ack → bounded retry → `Failed`** — a command that's never acked redelivers up to `MaxAttempts`, fails cleanly, and the next reconciliation cycle issues a fresh command for the still-open gap.
+3. **Offline → reconnect** — a device that never ran a cycle reconciles to *current* desired state on its first connect, even if that state changed while it was "offline."
+4. **A live fleet** — 40 simulated agents converge against one control plane concurrently, with a colored compliant/non-compliant board and a final `FleetHealth` snapshot.
+
 ### v0.2-mvp stack
 
 ```bash
@@ -119,15 +127,9 @@ dotnet run --project src/Warden.Agent
 
 The first cycle reports `bitlocker.enabled=false`, receives the normal remediation command,
 flips fake state in memory, and the next cycle reports green. The real mode uses `manage-bde`
-and should be run elevated or as the Windows Service/LocalSystem.
-
-The demo runs four scripted scenarios end-to-end with no human input, each printing what's
-happening as it goes:
-
-1. **Duplicate delivery applies once** — the same command id delivered three times mutates state once.
-2. **No ack → bounded retry → `Failed`** — a command that's never acked redelivers up to `MaxAttempts`, fails cleanly, and the next reconciliation cycle issues a fresh command for the still-open gap.
-3. **Offline → reconnect** — a device that never ran a cycle reconciles to *current* desired state on its first connect, even if that state changed while it was "offline."
-4. **A live fleet** — 40 simulated agents converge against one control plane concurrently, with a colored compliant/non-compliant board and a final `FleetHealth` snapshot.
+and should be run elevated or as the Windows Service/LocalSystem. (The agent logs a loud warning
+at startup if fake mode is on — it's a config flag, not a build switch, and should never be left
+set on a real managed device.)
 
 ## Design decisions
 
