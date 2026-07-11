@@ -71,8 +71,29 @@ public sealed class ReportingAgentWorker : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            RunOnce();
-            await Task.Delay(_options.PollInterval, stoppingToken);
+            try
+            {
+                RunOnce();
+            }
+            catch (Exception ex)
+            {
+                // A transient failure here (control plane briefly unreachable, a
+                // manage-bde call that errors) must not take the whole Windows Service
+                // down -- BackgroundService's default behavior is to stop the host on an
+                // unhandled exception, which would turn one bad poll into a permanently
+                // dead agent until someone notices and restarts it. Log and try again
+                // next interval instead.
+                _logger.LogError(ex, "Poll cycle failed; will retry in {PollInterval}", _options.PollInterval);
+            }
+
+            try
+            {
+                await Task.Delay(_options.PollInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutting down.
+            }
         }
     }
 

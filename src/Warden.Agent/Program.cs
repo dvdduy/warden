@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Warden.Agent;
 using Warden.Core;
@@ -37,4 +38,20 @@ builder.Services.AddSingleton<IControlPlaneClient>(services =>
 });
 builder.Services.AddHostedService<ReportingAgentWorker>();
 
-await builder.Build().RunAsync();
+var host = builder.Build();
+
+// Fake mode simulates BitLocker in memory -- it never touches real disk encryption. It's
+// a config flag, not a build-time switch, so nothing stops it from being left on for a
+// real managed device by accident. Since that would silently turn a security-compliance
+// agent into a no-op, make it as loud as possible at startup rather than a line in a
+// config file nobody re-reads.
+var agentOptions = host.Services.GetRequiredService<IOptions<AgentServiceOptions>>().Value;
+if (agentOptions.UseFakeBitLocker)
+{
+    host.Services.GetRequiredService<ILogger<Program>>().LogWarning(
+        "*** Agent:UseFakeBitLocker=true -- BitLocker state is SIMULATED, not real. " +
+        "This agent will NOT encrypt or report actual disk state. " +
+        "This must never be set on a real managed device. ***");
+}
+
+await host.RunAsync();

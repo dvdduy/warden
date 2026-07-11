@@ -69,4 +69,12 @@ public sealed class InMemoryDeviceRepository : IDeviceRepository
             return _devices.TryGetValue(id, out var device) ? device : null;
         }
     }
+
+    public IReadOnlyList<Device> GetAll()
+    {
+        lock (_gate)
+        {
+            return _devices.Values.ToList();
+        }
+    }
 }

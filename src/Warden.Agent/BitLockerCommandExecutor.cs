@@ -29,11 +29,10 @@ public sealed class BitLockerCommandExecutor : ICommandExecutor
             throw new InvalidOperationException($"Unsupported command action for this agent: '{command.Action}'");
         }
 
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new PlatformNotSupportedException("BitLocker remediation can only run on Windows.");
-        }
-
+        // No OperatingSystem.IsWindows() guard here -- see BitLockerActualStateProvider
+        // for why: it's redundant with the real process-start failure on unsupported
+        // platforms, and removing it is what makes this testable with a fake
+        // ISystemCommandRunner regardless of what OS the tests run on.
         var result = _commandRunner.Run("manage-bde", new[] { "-on", _volume });
         if (result.ExitCode != 0)
         {

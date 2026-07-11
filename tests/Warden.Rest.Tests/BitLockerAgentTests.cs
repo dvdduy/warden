@@ -88,6 +88,111 @@ public class BitLockerAgentTests
         Assert.Equal(0, client.AckCallCount);
     }
 
+    // ---- BitLockerActualStateProvider / BitLockerCommandExecutor, against a fake
+    // ISystemCommandRunner instead of the real manage-bde -- these previously had zero
+    // coverage of their own; only the classes that bypass them (fakes, or
+    // ReportingAgentWorker with a recording double) were tested. No OperatingSystem
+    // check guards these classes, so this runs on any OS the tests happen to execute on.
+
+    [Fact]
+    public void ActualStateProvider_reports_true_when_manage_bde_reports_protection_on()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-status", "C:" },
+            new CommandResult(0, "Protection Status:    Protection On", ""));
+
+        var provider = new BitLockerActualStateProvider(runner, Options.Create(new AgentServiceOptions()));
+
+        var actual = provider.GetActualState();
+
+        Assert.Equal("true", actual.Settings[BitLockerPolicy.EnabledKey]);
+    }
+
+    [Fact]
+    public void ActualStateProvider_reports_false_when_manage_bde_reports_protection_off()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-status", "C:" },
+            new CommandResult(0, "Protection Status:    Protection Off", ""));
+
+        var provider = new BitLockerActualStateProvider(runner, Options.Create(new AgentServiceOptions()));
+
+        var actual = provider.GetActualState();
+
+        Assert.Equal("false", actual.Settings[BitLockerPolicy.EnabledKey]);
+    }
+
+    [Fact]
+    public void ActualStateProvider_uses_the_configured_volume()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-status", "D:" },
+            new CommandResult(0, "Protection Status:    Protection On", ""));
+
+        var provider = new BitLockerActualStateProvider(
+            runner, Options.Create(new AgentServiceOptions { BitLockerVolume = "D:" }));
+
+        Assert.Equal("true", provider.GetActualState().Settings[BitLockerPolicy.EnabledKey]);
+    }
+
+    [Fact]
+    public void ActualStateProvider_throws_when_manage_bde_exits_nonzero()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-status", "C:" },
+            new CommandResult(1, "", "access denied"));
+
+        var provider = new BitLockerActualStateProvider(runner, Options.Create(new AgentServiceOptions()));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => provider.GetActualState());
+        Assert.Contains("access denied", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("set:bitlocker.enabled=true")]
+    [InlineData("enable-bitlocker")]
+    public void CommandExecutor_runs_manage_bde_on_for_either_enable_action(string action)
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-on", "C:" }, new CommandResult(0, "", ""));
+        var executor = new BitLockerCommandExecutor(runner, Options.Create(new AgentServiceOptions()));
+
+        executor.Execute(new Command(
+            CommandId.NewId(), new DeviceId("dev-1"), action,
+            CommandStatus.Delivered, 1, DateTimeOffset.UtcNow, null, null));
+
+        Assert.Equal(1, runner.CallCount("manage-bde", new[] { "-on", "C:" }));
+    }
+
+    [Fact]
+    public void CommandExecutor_throws_for_an_unrecognized_action_without_running_anything()
+    {
+        var runner = new FakeSystemCommandRunner();
+        var executor = new BitLockerCommandExecutor(runner, Options.Create(new AgentServiceOptions()));
+
+        var command = new Command(
+            CommandId.NewId(), new DeviceId("dev-1"), "set:unknown.setting=true",
+            CommandStatus.Delivered, 1, DateTimeOffset.UtcNow, null, null);
+
+        Assert.Throws<InvalidOperationException>(() => executor.Execute(command));
+        Assert.Equal(0, runner.TotalCallCount);
+    }
+
+    [Fact]
+    public void CommandExecutor_throws_when_manage_bde_exits_nonzero()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.WhenRun("manage-bde", new[] { "-on", "C:" }, new CommandResult(1, "", "elevation required"));
+        var executor = new BitLockerCommandExecutor(runner, Options.Create(new AgentServiceOptions()));
+
+        var command = new Command(
+            CommandId.NewId(), new DeviceId("dev-1"), "enable-bitlocker",
+            CommandStatus.Delivered, 1, DateTimeOffset.UtcNow, null, null);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => executor.Execute(command));
+        Assert.Contains("elevation required", ex.Message);
+    }
+
     [Fact]
     public void Fake_bitlocker_mode_drifts_then_remediates_to_compliant_without_manage_bde()
     {
@@ -208,5 +313,42 @@ public class BitLockerAgentTests
     private sealed class FailingCommandExecutor : ICommandExecutor
     {
         public void Execute(Command command) => throw new InvalidOperationException("simulated remediation failure");
+    }
+
+    /// <summary>
+    /// A fake ISystemCommandRunner: returns canned CommandResults for known
+    /// (fileName, arguments) pairs and records every call, instead of ever starting a
+    /// real process. This is what makes BitLockerActualStateProvider/
+    /// BitLockerCommandExecutor testable without a Windows machine or manage-bde.
+    /// </summary>
+    private sealed class FakeSystemCommandRunner : ISystemCommandRunner
+    {
+        private readonly Dictionary<string, CommandResult> _results = new();
+        private readonly Dictionary<string, int> _callCounts = new();
+
+        public int TotalCallCount => _callCounts.Values.Sum();
+
+        public void WhenRun(string fileName, IReadOnlyList<string> arguments, CommandResult result) =>
+            _results[Key(fileName, arguments)] = result;
+
+        public int CallCount(string fileName, IReadOnlyList<string> arguments) =>
+            _callCounts.GetValueOrDefault(Key(fileName, arguments));
+
+        public CommandResult Run(string fileName, IReadOnlyList<string> arguments)
+        {
+            var key = Key(fileName, arguments);
+            _callCounts[key] = _callCounts.GetValueOrDefault(key) + 1;
+
+            if (!_results.TryGetValue(key, out var result))
+            {
+                throw new InvalidOperationException(
+                    $"FakeSystemCommandRunner has no configured result for '{fileName} {string.Join(' ', arguments)}'.");
+            }
+
+            return result;
+        }
+
+        private static string Key(string fileName, IReadOnlyList<string> arguments) =>
+            $"{fileName} {string.Join(' ', arguments)}";
     }
 }

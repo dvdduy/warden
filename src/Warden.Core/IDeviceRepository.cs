@@ -34,4 +34,12 @@ public interface IDeviceRepository
 
     /// <summary>The device's last-known record, or null if it has never registered.</summary>
     Device? Get(DeviceId id);
+
+    /// <summary>
+    /// Every registered device. Used for fleet-wide reads (e.g. a compliance dashboard)
+    /// that need to list devices rather than look one up — not on any hot path, so a full
+    /// scan is an acceptable cost at v0.1-core/v0.2-mvp's scale. Mirrors
+    /// ICommandStore.GetAll().
+    /// </summary>
+    IReadOnlyList<Device> GetAll();
 }

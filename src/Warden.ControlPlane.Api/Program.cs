@@ -23,16 +23,15 @@ if (connectionString is not null)
     builder.Services.AddSingleton(dataSource);
     builder.Services.AddSingleton<IDeviceRepository, PostgresDeviceRepository>();
     builder.Services.AddSingleton<ICommandStore, PostgresCommandStore>();
-    builder.Services.AddSingleton<IDashboardReadModel, PostgresDashboardReadModel>();
 }
 else
 {
     builder.Services.AddSingleton<IDeviceRepository, InMemoryDeviceRepository>();
     builder.Services.AddSingleton<ICommandStore, InMemoryCommandStore>();
-    builder.Services.AddSingleton<IDashboardReadModel, InMemoryDashboardReadModel>();
 }
 
 builder.Services.AddSingleton<Warden.ControlPlane.ControlPlane>();
+builder.Services.AddHostedService<AckTimeoutSweeperHostedService>();
 
 var app = builder.Build();
 
@@ -65,8 +64,7 @@ app.Use(async (context, next) =>
 
 app.MapPost("/devices/enroll", (
     EnrollRequest request,
-    Warden.ControlPlane.ControlPlane controlPlane,
-    IDashboardReadModel dashboard) =>
+    Warden.ControlPlane.ControlPlane controlPlane) =>
 {
     var device = controlPlane.RegisterDevice(new DeviceId(request.DeviceId), request.Hostname);
     if (app.Configuration.GetValue<bool>("Warden:SeedBitLockerPolicy"))
@@ -77,20 +75,16 @@ app.MapPost("/devices/enroll", (
         }));
     }
 
-    dashboard.RecordDevice(device);
     return Results.Ok(DeviceDto.From(device));
 });
 
 app.MapPost("/devices/{deviceId}/report-state", (
     string deviceId,
     ReportStateRequest request,
-    Warden.ControlPlane.ControlPlane controlPlane,
-    IDashboardReadModel dashboard,
-    IClock clock) =>
+    Warden.ControlPlane.ControlPlane controlPlane) =>
 {
     var actual = new ActualState(request.Settings);
     var commands = controlPlane.ReportStateAndGetNewCommands(new DeviceId(deviceId), actual);
-    dashboard.RecordActualState(new DeviceId(deviceId), actual, clock.UtcNow);
     return Results.Ok(commands.Select(CommandDto.From));
 });
 
@@ -108,11 +102,19 @@ app.MapPost("/commands/{commandId}/ack", (string commandId, Warden.ControlPlane.
 
 app.MapGet("/health", (Warden.ControlPlane.ControlPlane controlPlane) => Results.Ok(controlPlane.GetHealthSnapshot()));
 
-app.MapGet("/dashboard/data", (IDashboardReadModel dashboard) => Results.Ok(dashboard.GetRows()));
+// The dashboard has no storage of its own -- it reads live through IDeviceRepository,
+// the same source of truth ControlPlane already writes to (see DashboardComplianceRow.From).
+app.MapGet("/dashboard/data", (IDeviceRepository devices) =>
+    Results.Ok(devices.GetAll()
+        .OrderBy(d => d.Hostname, StringComparer.OrdinalIgnoreCase)
+        .Select(DashboardComplianceRow.From)));
 
-app.MapGet("/dashboard", (IDashboardReadModel dashboard) =>
+app.MapGet("/dashboard", (IDeviceRepository devices) =>
 {
-    var rows = dashboard.GetRows();
+    var rows = devices.GetAll()
+        .OrderBy(d => d.Hostname, StringComparer.OrdinalIgnoreCase)
+        .Select(DashboardComplianceRow.From)
+        .ToList();
     var html = DashboardHtml.Render(rows);
     return Results.Content(html, "text/html; charset=utf-8");
 });
