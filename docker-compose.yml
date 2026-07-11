@@ -1,4 +1,18 @@
 services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: src/Warden.ControlPlane.Api/Dockerfile
+    container_name: warden-control-plane
+    environment:
+      WARDEN_DB: Host=postgres;Port=5432;Database=warden;Username=warden;Password=warden
+      Warden__SeedBitLockerPolicy: "true"
+    ports:
+      - "5000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     container_name: warden-postgres
