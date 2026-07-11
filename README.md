@@ -86,6 +86,18 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 - **GitHub Actions** — CI on every push and PR ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
 - **Docker Compose** — one command to run the control plane (added in `v0.2-mvp`)
 
+## Prerequisites
+
+- **.NET 10 SDK** — everything below assumes `dotnet` is on `PATH`.
+- **Docker** (for the `v0.2-mvp`/`v0.3-ipc` sections) — either Docker Desktop, or a Linux daemon
+  reachable through WSL, in which case prefix the `docker`/`docker compose` commands below with
+  `wsl` (e.g. `wsl docker compose up --build`).
+- **Windows** — `Warden.Agent`, `Warden.UserAgent`, and their test projects (`Warden.Ipc.Tests`,
+  `Warden.Agent.Tests`) call real Windows APIs (named-pipe ACLs, `WindowsIdentity`, WTS session
+  lookups) and only run correctly on Windows, though they compile anywhere. `Warden.Core` and
+  `Warden.ControlPlane` are fully cross-platform. CI reflects this split: see
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the exact commands run on each OS.
+
 ## Running it
 
 ### v0.1-core demo
@@ -93,9 +105,14 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 ```bash
 git clone https://github.com/dvdduy/warden.git
 cd warden
-dotnet test                          # all tests green (unit, failure-path, and concurrency)
+dotnet test tests/Warden.Core.Tests  # the pure reconciliation core -- green with zero setup
 dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
+
+Running plain `dotnet test` from the repo root picks up the whole solution, including the
+Postgres-backed `v0.2-mvp` tests and the Windows-only `v0.3-ipc` tests -- see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) for how CI runs the full suite split across
+a Linux job (with a real Postgres) and a Windows job.
 
 `Warden.Demo` runs four scripted scenarios end-to-end with no human input, each printing what's
 happening as it goes:
@@ -109,6 +126,7 @@ happening as it goes:
 
 ```bash
 docker compose up --build
+# no Docker Desktop? if the daemon runs in WSL instead: wsl docker compose up --build
 ```
 
 That starts PostgreSQL and the ASP.NET Core control plane at:
@@ -160,6 +178,25 @@ Demo flow:
    backoff.
 7. Re-trigger the drift/remediation flow and confirm the relaunched user-agent still receives the
    next compliance-change notification.
+
+**Steps 4-7 need `Warden.Agent` running as `LocalSystem`, not a plain `dotnet run`.** Launching
+`Warden.UserAgent` into a specific session (`CreateProcessAsUserLauncher`) needs `SeTcbPrivilege`,
+which only a process actually running as `LocalSystem` holds -- an ordinary user's `dotnet run`
+never has it. Two ways to see the real flow:
+
+- **Install it as an actual Windows Service** (elevated): `sc create WardenAgent binPath="<path
+  to Warden.Agent.exe>"` then `sc start WardenAgent`. This is the real deployment path and what
+  `SERVICE_CONTROL_SESSIONCHANGE` delivery depends on.
+- **Run interactively as SYSTEM** for a quick local look, e.g. via
+  [PsExec](https://learn.microsoft.com/sysinternals/downloads/psexec): `psexec -s -i dotnet run
+  --project src/Warden.Agent -- --Agent:UseFakeBitLocker=true`.
+
+Running `dotnet run --project src/Warden.Agent` directly (as in steps 1-3, or the `v0.2-mvp`
+section above) still demos the full compliance loop -- reporting, drift detection, remediation --
+but session launch fails gracefully with a single logged line
+(`WTSQueryUserToken failed for session 1`, Win32 error 1314) instead of a crash, and steps 4-7
+simply won't happen. That failure mode is itself deliberate and covered by
+`SessionAgentManagerTests`.
 
 Security checks to show alongside the demo:
 
