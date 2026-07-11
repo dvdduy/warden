@@ -252,3 +252,5 @@ unless the current one is committed and green.
 - [x] Session 5 — timeout + offline → `feat: ack-timeout redelivery and safe offline reconcile`
 - [x] Session 6 — concurrency + demo → `feat: concurrency test + structured logging + demo runner`
 - [x] Session 7 — docs + CI → `docs: DESIGN.md + README + CI` then `git tag v0.1-core`
+- [x] `v0.2-mvp` — Postgres persistence, REST transport, real BitLocker policy, compliance dashboard → `git tag v0.2-mvp`
+- [x] `v0.3-ipc` — hardened named-pipe IPC, per-session user-agent lifecycle, compliance-change toast, mutual watchdog → `git tag v0.3-ipc`
