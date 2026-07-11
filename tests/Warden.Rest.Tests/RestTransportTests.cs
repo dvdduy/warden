@@ -1,6 +1,8 @@
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Warden.Agent;
+using Warden.ControlPlane.Api;
 using Warden.Core;
 using Xunit;
 
@@ -113,5 +115,45 @@ public class RestTransportTests : IClassFixture<WebApplicationFactory<Program>>
         var command = Assert.Single(received);
         Assert.Equal("set:Encryption=off", command.Action); // current desired, not the stale "on"
         Assert.Equal("off", agent.Actual.Settings["Encryption"]);
+    }
+
+    [Fact]
+    public async Task Dashboard_shows_bitlocker_red_then_green_across_remediation_reports()
+    {
+        var deviceId = new DeviceId("rest-dashboard-bitlocker");
+        var http = _factory.CreateClient();
+        var client = new RestControlPlaneClient(http);
+        var agent = new Core.Agent(
+            deviceId,
+            "LAPTOP-DASHBOARD",
+            client,
+            new ActualState(new Dictionary<string, string>
+            {
+                ["bitlocker.enabled"] = "false"
+            }));
+        agent.Register();
+
+        ControlPlane.SetDesiredState(deviceId, new DesiredState(new Dictionary<string, string>
+        {
+            ["bitlocker.enabled"] = "true"
+        }));
+
+        agent.RunCycle();
+
+        var afterDrift = await http.GetFromJsonAsync<List<DashboardComplianceRow>>("/dashboard/data");
+        Assert.NotNull(afterDrift);
+        var red = afterDrift.Single(r => r.DeviceId == deviceId.Value);
+        Assert.Equal("Non-compliant", red.Status);
+
+        var html = await http.GetStringAsync("/dashboard");
+        Assert.Contains("LAPTOP-DASHBOARD", html);
+        Assert.Contains("Non-compliant", html);
+
+        agent.RunCycle();
+
+        var afterRemediation = await http.GetFromJsonAsync<List<DashboardComplianceRow>>("/dashboard/data");
+        Assert.NotNull(afterRemediation);
+        var green = afterRemediation.Single(r => r.DeviceId == deviceId.Value);
+        Assert.Equal("Compliant", green.Status);
     }
 }
