@@ -62,11 +62,7 @@ Warden.Agent          IControlPlaneClient seam          Warden.ControlPlane
                                   (failure paths)
 ```
 
-The `IControlPlaneClient` seam is why the transport is swappable: in-process for `v0.1-core`, REST for `v0.2-mvp` — without touching `Core`.
-
-This repo shipped in three tagged milestones — `v0.1-core`, `v0.2-mvp`, `v0.3-ipc` — each small,
-complete, and green before the next one started. All three are done; the sections below walk
-through what each one added and how to run it, against the current code, not a separate checkout.
+The `IControlPlaneClient` seam is why the transport is swappable — in-process or REST — without touching `Core`.
 
 ## Tech stack
 
@@ -74,12 +70,12 @@ through what each one added and how to run it, against the current code, not a s
 - **xUnit** — tests focused on failure and concurrency paths
 - **Microsoft.Extensions.Logging** — structured logs correlated by `CommandId` across the agent/control-plane boundary
 - **GitHub Actions** — CI on every push and PR ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
-- **Docker Compose** — one command to run the control plane (added in `v0.2-mvp`)
+- **Docker Compose** — one command to run the full Postgres-backed control plane
 
 ## Prerequisites
 
 - **.NET 10 SDK** — everything below assumes `dotnet` is on `PATH`.
-- **Docker** (for the `v0.2-mvp`/`v0.3-ipc` sections) — either Docker Desktop, or a Linux daemon
+- **Docker** (for the Postgres/IPC sections below) — either Docker Desktop, or a Linux daemon
   reachable through WSL, in which case prefix the `docker`/`docker compose` commands below with
   `wsl` (e.g. `wsl docker compose up --build`).
 - **Windows** — `Warden.Agent`, `Warden.UserAgent`, and their test projects (`Warden.Ipc.Tests`,
@@ -90,14 +86,13 @@ through what each one added and how to run it, against the current code, not a s
 
 ## Running it
 
-Each subsection below builds on the last, but all three run against the current code — no need to
-check out an earlier tag to see an earlier milestone; the tag just marks when that capability was
-added.
+Each subsection below builds on the last — all of it runs against the current code, no separate
+checkout needed.
 
 ### Reconciliation core (in-memory, zero setup)
 
 The base of the system: a pure reconciliation engine, an in-memory control plane, and a simulated
-fleet proving the four hard behaviors by test. This is the `v0.1-core` milestone — see
+fleet proving the four hard behaviors by test. See
 [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md) for the session-by-session build plan and
 [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the exercise spec it's built against.
 
@@ -109,7 +104,7 @@ dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
 
 Running plain `dotnet test` from the repo root picks up the whole solution, including the
-Postgres-backed `v0.2-mvp` tests and the Windows-only `v0.3-ipc` tests -- see
+Postgres-backed control-plane tests and the Windows-only IPC tests -- see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for how CI runs the full suite split across
 a Linux job (with a real Postgres) and a Windows job.
 
@@ -123,8 +118,8 @@ happening as it goes:
 
 ### Full stack: Postgres, REST, and a real BitLocker policy
 
-`v0.2-mvp` swaps the in-memory control plane for a real ASP.NET Core API backed by PostgreSQL,
-adds REST as the agent/control-plane transport, and wires up one real Windows policy end to end.
+This swaps the in-memory control plane for a real ASP.NET Core API backed by PostgreSQL, adds
+REST as the agent/control-plane transport, and wires up one real Windows policy end to end.
 
 ```bash
 docker compose up --build
@@ -154,7 +149,7 @@ set on a real managed device.)
 
 ### Windows IPC: user-agent + hardened named pipe
 
-`v0.3-ipc` adds the user-context boundary: `Warden.Agent` can keep running as the service-side
+This adds the user-context boundary: `Warden.Agent` can keep running as the service-side
 remediator, while `Warden.UserAgent` runs in the logged-on user's desktop session and receives
 notifications over a hardened named pipe. See [`docs/WARDEN_COURSE_IPC.md`](docs/WARDEN_COURSE_IPC.md)
 and [`docs/WARDEN_IPC.md`](docs/WARDEN_IPC.md) for the full design write-up.
@@ -170,7 +165,7 @@ dotnet run --project src/Warden.Agent
 
 Demo flow:
 
-1. Start the `v0.2-mvp` compose stack and open `http://localhost:5000/dashboard`.
+1. Start the compose stack (above) and open `http://localhost:5000/dashboard`.
 2. Start `Warden.Agent` in fake BitLocker mode.
 3. Let the first cycle report `bitlocker.enabled=false`; the control plane issues the normal
    remediation command.
@@ -194,8 +189,8 @@ never has it. Two ways to see the real flow:
   [PsExec](https://learn.microsoft.com/sysinternals/downloads/psexec): `psexec -s -i dotnet run
   --project src/Warden.Agent -- --Agent:UseFakeBitLocker=true`.
 
-Running `dotnet run --project src/Warden.Agent` directly (as in steps 1-3, or the `v0.2-mvp`
-section above) still demos the full compliance loop -- reporting, drift detection, remediation --
+Running `dotnet run --project src/Warden.Agent` directly (as in steps 1-3, or the previous
+section) still demos the full compliance loop -- reporting, drift detection, remediation --
 but session launch fails gracefully with a single logged line
 (`WTSQueryUserToken failed for session 1`, Win32 error 1314) instead of a crash, and steps 4-7
 simply won't happen. That failure mode is itself deliberate and covered by
@@ -220,8 +215,4 @@ Full reasoning in [`DESIGN.md`](DESIGN.md). The short version:
 
 **Pure reconciliation core.** `Reconciler.Diff(desired, actual, inFlight)` is a pure function — deterministic, no I/O, testable in isolation. The control plane just applies its output.
 
-**In-memory first.** `v0.1-core` uses no database. That is a deliberate scope decision, not an oversight. PostgreSQL is added in `v0.2-mvp` once the logic is proven correct. See `DESIGN.md` for the persistence trade-off.
-
----
-
-*Status: `v0.3-ipc` complete — the `v0.2-mvp` compliance loop now has a hardened per-session user-agent boundary for desktop notifications.*
+**In-memory first.** The reconciliation core originally shipped with no database at all. That was a deliberate scope decision, not an oversight — Postgres was added once the logic was proven correct. See `DESIGN.md` for the persistence trade-off.
