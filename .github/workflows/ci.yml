@@ -42,12 +42,14 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      - name: Test
-        run: >
-          dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
-          tests/Warden.Core.Tests/Warden.Core.Tests.csproj
-          tests/Warden.ControlPlane.Tests/Warden.ControlPlane.Tests.csproj
-          tests/Warden.Rest.Tests/Warden.Rest.Tests.csproj
+      - name: Test Warden.Core
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal" tests/Warden.Core.Tests/Warden.Core.Tests.csproj
+
+      - name: Test Warden.ControlPlane
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal" tests/Warden.ControlPlane.Tests/Warden.ControlPlane.Tests.csproj
+
+      - name: Test Warden.Rest
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal" tests/Warden.Rest.Tests/Warden.Rest.Tests.csproj
 
   # v0.3-ipc: named-pipe ACLs, WindowsIdentity, and WTS session lookups are real Windows APIs
   # and need a real Windows box to execute, not just compile -- see docs/WARDEN_COURSE_IPC.md.
@@ -71,8 +73,8 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      - name: Test
-        run: >
-          dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
-          tests/Warden.Ipc.Tests/Warden.Ipc.Tests.csproj
-          tests/Warden.Agent.Tests/Warden.Agent.Tests.csproj
+      - name: Test Warden.Ipc
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal" tests/Warden.Ipc.Tests/Warden.Ipc.Tests.csproj
+
+      - name: Test Warden.Agent
+        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal" tests/Warden.Agent.Tests/Warden.Agent.Tests.csproj
