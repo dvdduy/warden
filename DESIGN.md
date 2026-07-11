@@ -140,10 +140,16 @@ truth remains the control plane's desired-vs-actual comparison and command lifec
 
 The named pipe is hardened in two layers.
 
-**Layer 1: OS ACL.** `WardenPipeSecurity.Create` builds a pipe ACL that allows `LocalSystem` and the
-specific user SID for the target session, while explicitly denying broad principals such as
-`Everyone` and `Authenticated Users`. This keeps unrelated local processes from opening the pipe in
-the first place.
+**Layer 1: OS ACL.** `WardenPipeSecurity.Create` builds a pipe ACL that allows only `LocalSystem` and
+the specific user SID for the target session -- nothing else is granted access, so every other
+principal (`Everyone`, `Authenticated Users`, another logged-on user) gets the OS's default
+`AccessDenied` by omission. This deliberately does *not* add an explicit "deny Everyone" rule on top
+of the allow-list: Windows canonicalizes a DACL with all explicit Deny ACEs ordered before all
+explicit Allow ACEs, and access checks stop at the first matching ACE. The allowed user's own token
+still contains the "Everyone" SID, so an explicit "deny Everyone" ACE would be evaluated first and
+silently cancel out that same user's "allow" rule further down the list -- the exact kind of ACL
+misconfiguration this layer exists to prevent, not reintroduce. Omitting the broad grant entirely is
+the correct way to express "nobody else may connect."
 
 **Layer 2: peer verification.** An ACL says which principals may connect; it does not prove the
 connection is the exact session instance the service intended to serve. After a client connects,

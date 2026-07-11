@@ -7,7 +7,9 @@ on:
     branches: [main, master]
 
 jobs:
-  build-and-test:
+  # v0.1-core / v0.2-mvp: the reconciliation core, in-memory + Postgres-backed storage, and the
+  # REST transport are all platform-agnostic and run against a real Postgres here.
+  build-and-test-linux:
     runs-on: ubuntu-latest
 
     services:
@@ -41,4 +43,36 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
+        run: >
+          dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
+          tests/Warden.Core.Tests/Warden.Core.Tests.csproj
+          tests/Warden.ControlPlane.Tests/Warden.ControlPlane.Tests.csproj
+          tests/Warden.Rest.Tests/Warden.Rest.Tests.csproj
+
+  # v0.3-ipc: named-pipe ACLs, WindowsIdentity, and WTS session lookups are real Windows APIs
+  # and need a real Windows box to execute, not just compile -- see docs/WARDEN_COURSE_IPC.md.
+  # GitHub-hosted Windows runners don't support Linux service containers, so the
+  # Postgres-backed tests stay on the Linux job above.
+  build-and-test-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: >
+          dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
+          tests/Warden.Ipc.Tests/Warden.Ipc.Tests.csproj
+          tests/Warden.Agent.Tests/Warden.Agent.Tests.csproj
