@@ -13,6 +13,8 @@ public interface ISessionUserAgentHandle : IDisposable
     int ProcessId { get; }
 
     SecurityIdentifier UserSid { get; }
+
+    Task WaitForExitAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>

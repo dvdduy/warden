@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Warden.Agent;
+using Warden.Core;
 
 namespace Warden.Agent.Tests;
 
@@ -13,6 +15,34 @@ public class SessionAgentManagerTests
         var enumerator = new FakeSessionEnumerator();
         var manager = new SessionAgentManager(launcher, enumerator, NullLogger<SessionAgentManager>.Instance);
         return (manager, launcher, enumerator);
+    }
+
+    private static (
+        SessionAgentManager Manager,
+        FakeSessionUserAgentLauncher Launcher,
+        FakeSessionEnumerator Enumerator,
+        FakeClock Clock,
+        RecordingRestartDelay Delay) CreateWatchedManager(AgentServiceOptions? options = null)
+    {
+        var launcher = new FakeSessionUserAgentLauncher();
+        var enumerator = new FakeSessionEnumerator();
+        var clock = new FakeClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var delay = new RecordingRestartDelay();
+        var manager = new SessionAgentManager(
+            launcher,
+            enumerator,
+            clock,
+            delay,
+            Options.Create(options ?? new AgentServiceOptions
+            {
+                UserAgentRestartInitialBackoff = TimeSpan.FromSeconds(1),
+                UserAgentRestartMaxBackoff = TimeSpan.FromSeconds(8),
+                UserAgentCrashLoopWindow = TimeSpan.FromMinutes(1),
+                UserAgentMaxCrashesInWindow = 3
+            }),
+            NullLogger<SessionAgentManager>.Instance);
+
+        return (manager, launcher, enumerator, clock, delay);
     }
 
     [Fact]
@@ -101,5 +131,86 @@ public class SessionAgentManagerTests
 
         await manager.StopAsync(CancellationToken.None);
         Assert.Equal([sessionId], launcher.DisposedSessions);
+    }
+
+    [Fact]
+    public async Task User_agent_exit_respawns_the_session_agent()
+    {
+        var (manager, launcher, _, _, delay) = CreateWatchedManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForLaunchCountAsync(2);
+
+        Assert.Equal([sessionId, sessionId], launcher.LaunchedSessions);
+        Assert.Equal([TimeSpan.FromSeconds(1)], delay.Delays);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    [Fact]
+    public async Task Repeated_rapid_user_agent_exits_open_the_circuit_breaker()
+    {
+        var (manager, launcher, _, _, delay) = CreateWatchedManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForLaunchCountAsync(2);
+
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForLaunchCountAsync(3);
+
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForDisposedCountAsync(3);
+
+        Assert.Equal([sessionId, sessionId, sessionId], launcher.LaunchedSessions);
+        Assert.Equal([TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)], delay.Delays);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    [Fact]
+    public async Task Crash_after_the_window_expires_uses_the_initial_backoff_again()
+    {
+        var (manager, launcher, _, clock, delay) = CreateWatchedManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForLaunchCountAsync(2);
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+
+        launcher.ExitLatest(sessionId);
+        await launcher.WaitForLaunchCountAsync(3);
+
+        Assert.Equal([TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1)], delay.Delays);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    private sealed class FakeClock : IClock
+    {
+        private DateTimeOffset _now;
+
+        public FakeClock(DateTimeOffset start) => _now = start;
+
+        public DateTimeOffset UtcNow => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
+    private sealed class RecordingRestartDelay : IUserAgentRestartDelay
+    {
+        public List<TimeSpan> Delays { get; } = [];
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            Delays.Add(delay);
+            return Task.CompletedTask;
+        }
     }
 }

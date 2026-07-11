@@ -12,6 +12,9 @@ namespace Warden.Agent.Tests;
 internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
 {
     private readonly HashSet<int> _sessionsThatThrow = [];
+    private readonly List<FakeHandle> _handles = [];
+    private readonly List<LaunchWaiter> _launchWaiters = [];
+    private readonly List<DisposeWaiter> _disposeWaiters = [];
     private int _nextProcessId = 1000;
 
     public List<int> LaunchedSessions { get; } = [];
@@ -22,6 +25,33 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
 
     public void StopThrowingOnLaunch(int sessionId) => _sessionsThatThrow.Remove(sessionId);
 
+    public void ExitLatest(int sessionId) =>
+        _handles.Last(h => h.SessionId == sessionId && !h.Exited).Exit();
+
+    public Task WaitForLaunchCountAsync(int count)
+    {
+        if (LaunchedSessions.Count >= count)
+        {
+            return Task.CompletedTask;
+        }
+
+        var waiter = new LaunchWaiter(count, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        _launchWaiters.Add(waiter);
+        return waiter.Completion.Task;
+    }
+
+    public Task WaitForDisposedCountAsync(int count)
+    {
+        if (DisposedSessions.Count >= count)
+        {
+            return Task.CompletedTask;
+        }
+
+        var waiter = new DisposeWaiter(count, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+        _disposeWaiters.Add(waiter);
+        return waiter.Completion.Task;
+    }
+
     public ISessionUserAgentHandle Launch(int sessionId)
     {
         if (_sessionsThatThrow.Contains(sessionId))
@@ -30,12 +60,25 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
         }
 
         LaunchedSessions.Add(sessionId);
-        return new FakeHandle(this, sessionId, _nextProcessId++);
+        var handle = new FakeHandle(this, sessionId, _nextProcessId++);
+        _handles.Add(handle);
+        foreach (var waiter in _launchWaiters.Where(w => LaunchedSessions.Count >= w.Count).ToList())
+        {
+            waiter.Completion.SetResult();
+            _launchWaiters.Remove(waiter);
+        }
+
+        return handle;
     }
+
+    private sealed record LaunchWaiter(int Count, TaskCompletionSource Completion);
+
+    private sealed record DisposeWaiter(int Count, TaskCompletionSource Completion);
 
     private sealed class FakeHandle : ISessionUserAgentHandle
     {
         private readonly FakeSessionUserAgentLauncher _owner;
+        private readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _disposed;
 
         public FakeHandle(FakeSessionUserAgentLauncher owner, int sessionId, int processId)
@@ -53,6 +96,17 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
 
         public SecurityIdentifier UserSid { get; }
 
+        public bool Exited { get; private set; }
+
+        public Task WaitForExitAsync(CancellationToken cancellationToken) =>
+            _exited.Task.WaitAsync(cancellationToken);
+
+        public void Exit()
+        {
+            Exited = true;
+            _exited.TrySetResult();
+        }
+
         public void Dispose()
         {
             if (_disposed)
@@ -62,6 +116,11 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
 
             _disposed = true;
             _owner.DisposedSessions.Add(SessionId);
+            foreach (var waiter in _owner._disposeWaiters.Where(w => _owner.DisposedSessions.Count >= w.Count).ToList())
+            {
+                waiter.Completion.SetResult();
+                _owner._disposeWaiters.Remove(waiter);
+            }
         }
     }
 }

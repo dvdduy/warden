@@ -41,6 +41,8 @@ builder.Services.AddHostedService<ReportingAgentWorker>();
 
 builder.Services.AddSingleton<ISessionUserAgentLauncher, CreateProcessAsUserLauncher>();
 builder.Services.AddSingleton<ISessionEnumerator, WtsSessionEnumerator>();
+builder.Services.AddSingleton<Warden.Core.IClock, Warden.Core.SystemClock>();
+builder.Services.AddSingleton<IUserAgentRestartDelay, SystemUserAgentRestartDelay>();
 // Registered both as itself (WardenWindowsService.OnSessionChange resolves it directly to
 // forward SERVICE_CONTROL_SESSIONCHANGE) and as the IHostedService that starts/stops it with
 // everything else -- same singleton instance either way.

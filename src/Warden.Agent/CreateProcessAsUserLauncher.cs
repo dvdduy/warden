@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Principal;
 using Microsoft.Extensions.Options;
 using Warden.Agent.Interop;
@@ -65,6 +66,19 @@ public sealed class CreateProcessAsUserLauncher : ISessionUserAgentLauncher
         public int ProcessId { get; }
 
         public SecurityIdentifier UserSid { get; }
+
+        public async Task WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(ProcessId);
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ArgumentException)
+            {
+                // The process exited before the watchdog began waiting.
+            }
+        }
 
         public void Dispose()
         {

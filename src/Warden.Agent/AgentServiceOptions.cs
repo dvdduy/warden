@@ -22,4 +22,12 @@ public sealed class AgentServiceOptions
     /// </summary>
     public string UserAgentExecutablePath { get; set; } =
         Path.Combine(AppContext.BaseDirectory, "Warden.UserAgent.exe");
+
+    public TimeSpan UserAgentRestartInitialBackoff { get; set; } = TimeSpan.FromSeconds(2);
+
+    public TimeSpan UserAgentRestartMaxBackoff { get; set; } = TimeSpan.FromSeconds(30);
+
+    public TimeSpan UserAgentCrashLoopWindow { get; set; } = TimeSpan.FromMinutes(1);
+
+    public int UserAgentMaxCrashesInWindow { get; set; } = 3;
 }
