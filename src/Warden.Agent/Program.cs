@@ -37,6 +37,7 @@ builder.Services.AddSingleton<IControlPlaneClient>(services =>
     });
 });
 builder.Services.AddHostedService<ReportingAgentWorker>();
+builder.Services.AddHostedService<IpcPipeHostedService>();
 
 var host = builder.Build();
 

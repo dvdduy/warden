@@ -5,10 +5,13 @@
     <Project Path="src/Warden.ControlPlane.Api/Warden.ControlPlane.Api.csproj" />
     <Project Path="src/Warden.Core/Warden.Core.csproj" />
     <Project Path="src/Warden.Demo/Warden.Demo.csproj" />
+    <Project Path="src/Warden.Ipc/Warden.Ipc.csproj" />
+    <Project Path="src/Warden.UserAgent/Warden.UserAgent.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Warden.Core.Tests/Warden.Core.Tests.csproj" />
     <Project Path="tests/Warden.ControlPlane.Tests/Warden.ControlPlane.Tests.csproj" />
     <Project Path="tests/Warden.Rest.Tests/Warden.Rest.Tests.csproj" />
+    <Project Path="tests/Warden.Ipc.Tests/Warden.Ipc.Tests.csproj" />
   </Folder>
 </Solution>

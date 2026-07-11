@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Warden.Core\Warden.Core.csproj" />
+    <ProjectReference Include="..\Warden.Ipc\Warden.Ipc.csproj" />
   </ItemGroup>
 
   <ItemGroup>
