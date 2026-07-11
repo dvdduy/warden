@@ -96,6 +96,11 @@ dotnet test                          # all tests green (unit, failure-path, and 
 dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
 
+> **`v0.2-mvp` in progress:** `Warden.ControlPlane.Tests` proves the PostgreSQL-backed
+> `ICommandStore`/`IDeviceRepository` implementations against a real database and needs
+> Postgres running first: `docker compose up -d postgres`, then `dotnet test` as above.
+> Everything else still runs with no external dependencies.
+
 The demo runs four scripted scenarios end-to-end with no human input, each printing what's
 happening as it goes:
 
