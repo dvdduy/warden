@@ -64,6 +64,14 @@ app.Use(async (context, next) =>
 app.MapPost("/devices/enroll", (EnrollRequest request, Warden.ControlPlane.ControlPlane controlPlane) =>
 {
     var device = controlPlane.RegisterDevice(new DeviceId(request.DeviceId), request.Hostname);
+    if (app.Configuration.GetValue<bool>("Warden:SeedBitLockerPolicy"))
+    {
+        controlPlane.SetDesiredState(device.Id, new DesiredState(new Dictionary<string, string>
+        {
+            ["bitlocker.enabled"] = "true"
+        }));
+    }
+
     return Results.Ok(DeviceDto.From(device));
 });
 
