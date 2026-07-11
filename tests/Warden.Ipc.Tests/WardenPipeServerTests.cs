@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Principal;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Warden.Ipc;
 
@@ -32,6 +33,41 @@ public class WardenPipeServerTests
 
         Assert.Equal(PipeMessage.Pong.Type, response?.Type);
         Assert.True(accepted);
+    }
+
+    [Fact]
+    public async Task ComplianceChanged_message_can_be_pushed_to_the_connected_user_agent()
+    {
+        var pipeName = $"WardenIpcTest-{Guid.NewGuid():N}";
+        using var currentIdentity = WindowsIdentity.GetCurrent();
+        var currentUserSid = currentIdentity.User!;
+        var actualSessionId = Process.GetCurrentProcess().SessionId;
+        var outboundMessages = Channel.CreateUnbounded<PipeMessage>();
+
+        var server = new WardenPipeServer(pipeName, currentUserSid, actualSessionId, NullLogger.Instance);
+        var serverCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var serverTask = server.AcceptAndServeOnceAsync(
+            (message, _) => Task.FromResult(message.Type == PipeMessage.Ping.Type ? PipeMessage.Pong : null),
+            outboundMessages.Reader,
+            serverCts.Token);
+
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await client.ConnectAsync((int)TimeSpan.FromSeconds(5).TotalMilliseconds);
+
+        await PipeMessageProtocol.WriteAsync(client, PipeMessage.Ping);
+        Assert.Equal(PipeMessage.Pong.Type, (await PipeMessageProtocol.ReadAsync(client))?.Type);
+
+        Assert.True(outboundMessages.Writer.TryWrite(PipeMessage.ComplianceChanged("bitlocker.enabled", "Compliant")));
+
+        var pushed = await PipeMessageProtocol.ReadAsync(client, serverCts.Token);
+        var payload = pushed?.TryGetComplianceChangedPayload();
+
+        Assert.Equal("ComplianceChanged", pushed?.Type);
+        Assert.Equal("bitlocker.enabled", payload?.Rule);
+        Assert.Equal("Compliant", payload?.Status);
+
+        await serverCts.CancelAsync();
+        await serverTask;
     }
 
     /// <summary>

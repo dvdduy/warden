@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Warden.Ipc;
@@ -21,7 +22,7 @@ namespace Warden.Agent;
 /// changed) and calls into <see cref="OnSessionLogonAsync"/>/<see cref="OnSessionLogoffAsync"/>
 /// here.
 /// </summary>
-public sealed class SessionAgentManager : IHostedService
+public sealed class SessionAgentManager : IHostedService, IComplianceChangeNotifier
 {
     private readonly ISessionUserAgentLauncher _launcher;
     private readonly ISessionEnumerator _sessionEnumerator;
@@ -81,9 +82,14 @@ public sealed class SessionAgentManager : IHostedService
         }
 
         var loopCts = CancellationTokenSource.CreateLinkedTokenSource(_hostCts.Token);
+        var outboundMessages = Channel.CreateUnbounded<PipeMessage>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
         var server = new WardenPipeServer(PipeNames.ForSession(sessionId), handle.UserSid, sessionId, _logger);
-        var loopTask = RunPipeLoopAsync(server, loopCts.Token);
-        var entry = new SessionEntry(handle, loopCts, loopTask);
+        var loopTask = RunPipeLoopAsync(server, outboundMessages.Reader, loopCts.Token);
+        var entry = new SessionEntry(handle, loopCts, loopTask, outboundMessages.Writer);
 
         if (!_sessions.TryAdd(sessionId, entry))
         {
@@ -111,13 +117,33 @@ public sealed class SessionAgentManager : IHostedService
         _logger.LogInformation("Session {SessionId} logged off; user-agent torn down", sessionId);
     }
 
-    private async Task RunPipeLoopAsync(WardenPipeServer server, CancellationToken cancellationToken)
+    public Task NotifyComplianceChangedAsync(string rule, string status, CancellationToken cancellationToken = default)
+    {
+        var message = PipeMessage.ComplianceChanged(rule, status);
+        foreach (var (sessionId, entry) in _sessions)
+        {
+            if (!entry.OutboundMessages.TryWrite(message))
+            {
+                _logger.LogWarning(
+                    "Could not enqueue compliance-change IPC message for session {SessionId}",
+                    sessionId);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task RunPipeLoopAsync(
+        WardenPipeServer server,
+        ChannelReader<PipeMessage> outboundMessages,
+        CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await server.AcceptAndServeOnceAsync(HandleMessageAsync, cancellationToken).ConfigureAwait(false);
+                await server.AcceptAndServeOnceAsync(HandleMessageAsync, outboundMessages, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -137,6 +163,7 @@ public sealed class SessionAgentManager : IHostedService
 
     private static async Task TearDownAsync(SessionEntry entry)
     {
+        entry.OutboundMessages.TryComplete();
         entry.LoopCts.Cancel();
         try
         {
@@ -164,5 +191,9 @@ public sealed class SessionAgentManager : IHostedService
         }
     }
 
-    private sealed record SessionEntry(ISessionUserAgentHandle Handle, CancellationTokenSource LoopCts, Task LoopTask);
+    private sealed record SessionEntry(
+        ISessionUserAgentHandle Handle,
+        CancellationTokenSource LoopCts,
+        Task LoopTask,
+        ChannelWriter<PipeMessage> OutboundMessages);
 }

@@ -6,6 +6,18 @@ namespace Warden.Ipc.Tests;
 public class PipeMessageProtocolTests
 {
     [Fact]
+    public void ComplianceChanged_payload_round_trips()
+    {
+        var message = PipeMessage.ComplianceChanged("bitlocker.enabled", "Compliant");
+
+        var payload = message.TryGetComplianceChangedPayload();
+
+        Assert.Equal("ComplianceChanged", message.Type);
+        Assert.Equal("bitlocker.enabled", payload?.Rule);
+        Assert.Equal("Compliant", payload?.Status);
+    }
+
+    [Fact]
     public async Task Ping_round_trips_to_Pong_over_a_real_named_pipe()
     {
         var pipeName = $"WardenIpcTest-{Guid.NewGuid():N}";

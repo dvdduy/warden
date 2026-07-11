@@ -45,6 +45,8 @@ builder.Services.AddSingleton<ISessionEnumerator, WtsSessionEnumerator>();
 // forward SERVICE_CONTROL_SESSIONCHANGE) and as the IHostedService that starts/stops it with
 // everything else -- same singleton instance either way.
 builder.Services.AddSingleton<SessionAgentManager>();
+builder.Services.AddSingleton<IComplianceChangeNotifier>(services =>
+    services.GetRequiredService<SessionAgentManager>());
 builder.Services.AddHostedService(services => services.GetRequiredService<SessionAgentManager>());
 
 var host = builder.Build();

@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Security.Principal;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -39,6 +40,7 @@ public sealed class WardenPipeServer
     /// </summary>
     public async Task<bool> AcceptAndServeOnceAsync(
         Func<PipeMessage, CancellationToken, Task<PipeMessage?>> handleMessageAsync,
+        ChannelReader<PipeMessage>? outboundMessages,
         CancellationToken cancellationToken)
     {
         var security = WardenPipeSecurity.Create(_allowedUserSid);
@@ -67,7 +69,32 @@ public sealed class WardenPipeServer
 
         _logger.LogInformation("IPC client connected from session {SessionId}", clientSessionId);
 
-        while (server.IsConnected)
+        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var writeLock = new SemaphoreSlim(1, 1);
+        var inboundTask = ReadInboundAsync(server, handleMessageAsync, writeLock, connectionCts.Token);
+        var outboundTask = outboundMessages is null
+            ? Task.Delay(Timeout.InfiniteTimeSpan, connectionCts.Token)
+            : WriteOutboundAsync(server, outboundMessages, writeLock, connectionCts.Token);
+
+        await Task.WhenAny(inboundTask, outboundTask).ConfigureAwait(false);
+        await connectionCts.CancelAsync().ConfigureAwait(false);
+
+        _logger.LogInformation("IPC client disconnected");
+        return true;
+    }
+
+    public Task<bool> AcceptAndServeOnceAsync(
+        Func<PipeMessage, CancellationToken, Task<PipeMessage?>> handleMessageAsync,
+        CancellationToken cancellationToken) =>
+        AcceptAndServeOnceAsync(handleMessageAsync, outboundMessages: null, cancellationToken);
+
+    private static async Task ReadInboundAsync(
+        NamedPipeServerStream server,
+        Func<PipeMessage, CancellationToken, Task<PipeMessage?>> handleMessageAsync,
+        SemaphoreSlim writeLock,
+        CancellationToken cancellationToken)
+    {
+        while (server.IsConnected && !cancellationToken.IsCancellationRequested)
         {
             var message = await PipeMessageProtocol.ReadAsync(server, cancellationToken).ConfigureAwait(false);
             if (message is null)
@@ -78,11 +105,41 @@ public sealed class WardenPipeServer
             var response = await handleMessageAsync(message, cancellationToken).ConfigureAwait(false);
             if (response is not null)
             {
-                await PipeMessageProtocol.WriteAsync(server, response, cancellationToken).ConfigureAwait(false);
+                await writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await PipeMessageProtocol.WriteAsync(server, response, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
             }
         }
+    }
 
-        _logger.LogInformation("IPC client disconnected");
-        return true;
+    private static async Task WriteOutboundAsync(
+        NamedPipeServerStream server,
+        ChannelReader<PipeMessage> outboundMessages,
+        SemaphoreSlim writeLock,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var message in outboundMessages.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!server.IsConnected)
+            {
+                break;
+            }
+
+            await writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await PipeMessageProtocol.WriteAsync(server, message, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
     }
 }

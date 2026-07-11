@@ -40,6 +40,7 @@ public class BitLockerAgentTests
     {
         var client = new RecordingClient();
         var executor = new RecordingCommandExecutor();
+        var notifier = new RecordingComplianceChangeNotifier();
         var worker = new ReportingAgentWorker(
             client,
             new StaticActualStateProvider(new ActualState(new Dictionary<string, string>
@@ -47,6 +48,7 @@ public class BitLockerAgentTests
                 [BitLockerPolicy.EnabledKey] = "false"
             })),
             executor,
+            notifier,
             Options.Create(new AgentServiceOptions
             {
                 DeviceId = "dev-bitlocker",
@@ -62,12 +64,14 @@ public class BitLockerAgentTests
         Assert.Equal(1, client.MarkDeliveredCallCount);
         Assert.Equal(1, client.AckCallCount);
         Assert.Equal(client.IssuedCommand!.Id, executor.ExecutedCommandId);
+        Assert.Equal([("bitlocker.enabled", "Compliant")], notifier.Notifications);
     }
 
     [Fact]
     public void Worker_leaves_failed_remediation_unacked_for_control_plane_retry()
     {
         var client = new RecordingClient();
+        var notifier = new RecordingComplianceChangeNotifier();
         var worker = new ReportingAgentWorker(
             client,
             new StaticActualStateProvider(new ActualState(new Dictionary<string, string>
@@ -75,6 +79,7 @@ public class BitLockerAgentTests
                 [BitLockerPolicy.EnabledKey] = "false"
             })),
             new FailingCommandExecutor(),
+            notifier,
             Options.Create(new AgentServiceOptions
             {
                 DeviceId = "dev-bitlocker",
@@ -86,6 +91,7 @@ public class BitLockerAgentTests
 
         Assert.Equal(1, client.MarkDeliveredCallCount);
         Assert.Equal(0, client.AckCallCount);
+        Assert.Empty(notifier.Notifications);
     }
 
     // ---- BitLockerActualStateProvider / BitLockerCommandExecutor, against a fake
@@ -313,6 +319,20 @@ public class BitLockerAgentTests
     private sealed class FailingCommandExecutor : ICommandExecutor
     {
         public void Execute(Command command) => throw new InvalidOperationException("simulated remediation failure");
+    }
+
+    private sealed class RecordingComplianceChangeNotifier : IComplianceChangeNotifier
+    {
+        public List<(string Rule, string Status)> Notifications { get; } = [];
+
+        public Task NotifyComplianceChangedAsync(
+            string rule,
+            string status,
+            CancellationToken cancellationToken = default)
+        {
+            Notifications.Add((rule, status));
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>

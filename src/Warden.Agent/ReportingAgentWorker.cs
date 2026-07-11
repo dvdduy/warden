@@ -10,6 +10,7 @@ public sealed class ReportingAgentWorker : BackgroundService
     private readonly IControlPlaneClient _client;
     private readonly IActualStateProvider _actualStateProvider;
     private readonly ICommandExecutor _commandExecutor;
+    private readonly IComplianceChangeNotifier _complianceChangeNotifier;
     private readonly AgentServiceOptions _options;
     private readonly ILogger<ReportingAgentWorker> _logger;
     private bool _registered;
@@ -18,14 +19,26 @@ public sealed class ReportingAgentWorker : BackgroundService
         IControlPlaneClient client,
         IActualStateProvider actualStateProvider,
         ICommandExecutor commandExecutor,
+        IComplianceChangeNotifier complianceChangeNotifier,
         IOptions<AgentServiceOptions> options,
         ILogger<ReportingAgentWorker> logger)
     {
         _client = client;
         _actualStateProvider = actualStateProvider;
         _commandExecutor = commandExecutor;
+        _complianceChangeNotifier = complianceChangeNotifier;
         _options = options.Value;
         _logger = logger;
+    }
+
+    public ReportingAgentWorker(
+        IControlPlaneClient client,
+        IActualStateProvider actualStateProvider,
+        ICommandExecutor commandExecutor,
+        IOptions<AgentServiceOptions> options,
+        ILogger<ReportingAgentWorker> logger)
+        : this(client, actualStateProvider, commandExecutor, NullComplianceChangeNotifier.Instance, options, logger)
+    {
     }
 
     public void RunOnce()
@@ -52,6 +65,14 @@ public sealed class ReportingAgentWorker : BackgroundService
 
                 _commandExecutor.Execute(command);
                 _client.Ack(command.Id);
+
+                if (TryParseSetAction(command.Action, out var rule))
+                {
+                    _complianceChangeNotifier
+                        .NotifyComplianceChangedAsync(rule, "Compliant")
+                        .GetAwaiter()
+                        .GetResult();
+                }
 
                 _logger.LogInformation(
                     "Command {CommandId} executed and acked",
@@ -111,5 +132,25 @@ public sealed class ReportingAgentWorker : BackgroundService
             "Registered {DeviceId} ({Hostname}) with the control plane",
             _options.DeviceId,
             _options.Hostname);
+    }
+
+    private static bool TryParseSetAction(string action, out string rule)
+    {
+        const string prefix = "set:";
+        rule = string.Empty;
+
+        if (!action.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var equalsIndex = action.IndexOf('=', prefix.Length);
+        if (equalsIndex <= prefix.Length)
+        {
+            return false;
+        }
+
+        rule = action[prefix.Length..equalsIndex];
+        return true;
     }
 }
