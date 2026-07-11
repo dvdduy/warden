@@ -1,0 +1,105 @@
+using Microsoft.Extensions.Logging.Abstractions;
+using Warden.Agent;
+
+namespace Warden.Agent.Tests;
+
+public class SessionAgentManagerTests
+{
+    private static int NextSessionId() => Random.Shared.Next(100_000, 999_999);
+
+    private static (SessionAgentManager Manager, FakeSessionUserAgentLauncher Launcher, FakeSessionEnumerator Enumerator) CreateManager()
+    {
+        var launcher = new FakeSessionUserAgentLauncher();
+        var enumerator = new FakeSessionEnumerator();
+        var manager = new SessionAgentManager(launcher, enumerator, NullLogger<SessionAgentManager>.Instance);
+        return (manager, launcher, enumerator);
+    }
+
+    [Fact]
+    public async Task Logon_launches_the_user_agent_for_that_session()
+    {
+        var (manager, launcher, _) = CreateManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+
+        Assert.Equal([sessionId], launcher.LaunchedSessions);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    [Fact]
+    public async Task Duplicate_logon_notifications_for_the_same_session_are_idempotent()
+    {
+        var (manager, launcher, _) = CreateManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+        await manager.OnSessionLogonAsync(sessionId);
+        await manager.OnSessionLogonAsync(sessionId);
+
+        Assert.Equal([sessionId], launcher.LaunchedSessions);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    [Fact]
+    public async Task Logoff_tears_down_the_tracked_session()
+    {
+        var (manager, launcher, _) = CreateManager();
+        var sessionId = NextSessionId();
+
+        await manager.OnSessionLogonAsync(sessionId);
+        await manager.OnSessionLogoffAsync(sessionId);
+
+        Assert.Equal([sessionId], launcher.DisposedSessions);
+    }
+
+    [Fact]
+    public async Task Logoff_of_a_session_that_was_never_logged_on_is_a_noop()
+    {
+        var (manager, launcher, _) = CreateManager();
+
+        await manager.OnSessionLogoffAsync(NextSessionId());
+
+        Assert.Empty(launcher.DisposedSessions);
+    }
+
+    [Fact]
+    public async Task A_launch_failure_is_logged_and_does_not_leave_the_session_tracked()
+    {
+        var (manager, launcher, _) = CreateManager();
+        var sessionId = NextSessionId();
+        launcher.ThrowOnLaunch(sessionId);
+
+        // Must not throw -- a failure to launch one session's user-agent (e.g. the session
+        // logged off again before we got to it) can't be allowed to take the whole host down.
+        await manager.OnSessionLogonAsync(sessionId);
+
+        Assert.Empty(launcher.LaunchedSessions);
+
+        // Nothing was tracked for the failed attempt, so a later successful launch isn't
+        // blocked by stale state from the failure.
+        launcher.StopThrowingOnLaunch(sessionId);
+        await manager.OnSessionLogonAsync(sessionId);
+
+        Assert.Equal([sessionId], launcher.LaunchedSessions);
+
+        await manager.OnSessionLogoffAsync(sessionId);
+    }
+
+    [Fact]
+    public async Task Starting_with_an_already_active_session_launches_its_user_agent_without_waiting_for_a_notification()
+    {
+        var (manager, launcher, enumerator) = CreateManager();
+        var sessionId = NextSessionId();
+        enumerator.ActiveSessionIds.Add(sessionId);
+
+        await manager.StartAsync(CancellationToken.None);
+
+        Assert.Equal([sessionId], launcher.LaunchedSessions);
+
+        await manager.StopAsync(CancellationToken.None);
+        Assert.Equal([sessionId], launcher.DisposedSessions);
+    }
+}

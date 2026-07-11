@@ -15,4 +15,11 @@ public sealed class AgentServiceOptions
     public bool UseFakeBitLocker { get; set; }
 
     public bool FakeBitLockerEnabled { get; set; }
+
+    /// <summary>
+    /// Assumes Warden.UserAgent.exe is deployed next to Warden.Agent's own binaries, which is
+    /// true for this single-repo build; an installer/MSIX package would set this explicitly.
+    /// </summary>
+    public string UserAgentExecutablePath { get; set; } =
+        Path.Combine(AppContext.BaseDirectory, "Warden.UserAgent.exe");
 }

@@ -13,5 +13,6 @@
     <Project Path="tests/Warden.ControlPlane.Tests/Warden.ControlPlane.Tests.csproj" />
     <Project Path="tests/Warden.Rest.Tests/Warden.Rest.Tests.csproj" />
     <Project Path="tests/Warden.Ipc.Tests/Warden.Ipc.Tests.csproj" />
+    <Project Path="tests/Warden.Agent.Tests/Warden.Agent.Tests.csproj" />
   </Folder>
 </Solution>

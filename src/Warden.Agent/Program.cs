@@ -1,5 +1,7 @@
+using System.ServiceProcess;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Warden.Agent;
@@ -8,7 +10,6 @@ using Warden.Core;
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<AgentServiceOptions>(builder.Configuration.GetSection("Agent"));
-builder.Services.AddWindowsService(options => options.ServiceName = "Warden Agent");
 
 builder.Services.AddSingleton<ISystemCommandRunner, ProcessSystemCommandRunner>();
 builder.Services.AddSingleton<FakeBitLockerState>();
@@ -37,7 +38,14 @@ builder.Services.AddSingleton<IControlPlaneClient>(services =>
     });
 });
 builder.Services.AddHostedService<ReportingAgentWorker>();
-builder.Services.AddHostedService<IpcPipeHostedService>();
+
+builder.Services.AddSingleton<ISessionUserAgentLauncher, CreateProcessAsUserLauncher>();
+builder.Services.AddSingleton<ISessionEnumerator, WtsSessionEnumerator>();
+// Registered both as itself (WardenWindowsService.OnSessionChange resolves it directly to
+// forward SERVICE_CONTROL_SESSIONCHANGE) and as the IHostedService that starts/stops it with
+// everything else -- same singleton instance either way.
+builder.Services.AddSingleton<SessionAgentManager>();
+builder.Services.AddHostedService(services => services.GetRequiredService<SessionAgentManager>());
 
 var host = builder.Build();
 
@@ -55,4 +63,16 @@ if (agentOptions.UseFakeBitLocker)
         "This must never be set on a real managed device. ***");
 }
 
-await host.RunAsync();
+// AddWindowsService() can't be used alongside session-change handling (see
+// WardenWindowsService's doc comment), so the SCM/console branch is manual: a real installed
+// service gets SERVICE_CONTROL_SESSIONCHANGE via WardenWindowsService; running interactively
+// (dev, `dotnet run`) just runs the host directly -- session-change notifications only ever
+// arrive when actually launched by the Service Control Manager.
+if (WindowsServiceHelpers.IsWindowsService())
+{
+    ServiceBase.Run(new WardenWindowsService(host));
+}
+else
+{
+    await host.RunAsync();
+}

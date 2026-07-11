@@ -1,9 +1,13 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using Warden.Ipc;
 
-using var client = new NamedPipeClientStream(".", PipeNames.Default, PipeDirection.InOut, PipeOptions.Asynchronous);
+var sessionId = Process.GetCurrentProcess().SessionId;
+var pipeName = PipeNames.ForSession(sessionId);
 
-Console.WriteLine($"Connecting to \\\\.\\pipe\\{PipeNames.Default} ...");
+using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+
+Console.WriteLine($"Connecting to \\\\.\\pipe\\{pipeName} (session {sessionId}) ...");
 await client.ConnectAsync((int)TimeSpan.FromSeconds(5).TotalMilliseconds);
 Console.WriteLine("Connected. Sending Ping.");
 
