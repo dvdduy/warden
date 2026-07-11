@@ -144,6 +144,25 @@ public sealed class SessionAgentManager : IHostedService, IComplianceChangeNotif
 
         entry.MonitorTask = MonitorUserAgentExitAsync(sessionId, entry);
 
+        if (!_activeSessions.ContainsKey(sessionId))
+        {
+            // The session logged off while _launcher.Launch (a slow, blocking Win32 call) was
+            // still in flight -- OnSessionLogoffAsync ran, found nothing in _sessions yet, and
+            // returned having done no teardown. Catch up on the teardown it missed instead of
+            // leaking this entry forever; only remove it if it's still exactly the entry we just
+            // added, so we don't tear down a session that's since logged back on and replaced it.
+            if (_sessions.TryRemove(KeyValuePair.Create(sessionId, entry)))
+            {
+                _logger.LogInformation(
+                    "Session {SessionId} logged off while its user-agent was still launching; tearing down PID {ProcessId}",
+                    sessionId,
+                    handle.ProcessId);
+                await TearDownAsync(entry, awaitMonitor: true).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         _logger.LogInformation(
             "Session {SessionId} logged on; launched user-agent PID {ProcessId}",
             sessionId,

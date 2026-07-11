@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Principal;
 using Warden.Agent;
 
@@ -15,6 +16,8 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
     private readonly List<FakeHandle> _handles = [];
     private readonly List<LaunchWaiter> _launchWaiters = [];
     private readonly List<DisposeWaiter> _disposeWaiters = [];
+    private readonly ConcurrentDictionary<int, TaskCompletionSource> _launchGates = new();
+    private readonly ConcurrentDictionary<int, byte> _launchAttempts = new();
     private int _nextProcessId = 1000;
 
     public List<int> LaunchedSessions { get; } = [];
@@ -27,6 +30,20 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
 
     public void ExitLatest(int sessionId) =>
         _handles.Last(h => h.SessionId == sessionId && !h.Exited).Exit();
+
+    /// <summary>Makes the next Launch(sessionId) block inside the call until ReleaseLaunch runs -- simulates the real launcher's slow, blocking Win32 call chain so tests can race a logoff against it.</summary>
+    public void PauseLaunch(int sessionId) =>
+        _launchGates[sessionId] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public void ReleaseLaunch(int sessionId)
+    {
+        if (_launchGates.TryGetValue(sessionId, out var gate))
+        {
+            gate.TrySetResult();
+        }
+    }
+
+    public bool HasAttemptedLaunch(int sessionId) => _launchAttempts.ContainsKey(sessionId);
 
     public Task WaitForLaunchCountAsync(int count)
     {
@@ -57,6 +74,13 @@ internal sealed class FakeSessionUserAgentLauncher : ISessionUserAgentLauncher
         if (_sessionsThatThrow.Contains(sessionId))
         {
             throw new InvalidOperationException($"Simulated launch failure for session {sessionId}");
+        }
+
+        _launchAttempts[sessionId] = 0;
+
+        if (_launchGates.TryGetValue(sessionId, out var gate))
+        {
+            gate.Task.GetAwaiter().GetResult();
         }
 
         LaunchedSessions.Add(sessionId);

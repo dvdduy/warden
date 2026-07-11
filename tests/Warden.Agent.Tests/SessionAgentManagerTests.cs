@@ -119,6 +119,38 @@ public class SessionAgentManagerTests
     }
 
     [Fact]
+    public async Task Logoff_during_a_slow_launch_tears_down_the_session_instead_of_leaking_it()
+    {
+        var (manager, launcher, _) = CreateManager();
+        var sessionId = NextSessionId();
+        launcher.PauseLaunch(sessionId);
+
+        var logonTask = Task.Run(() => manager.OnSessionLogonAsync(sessionId));
+
+        // Wait until Launch() has actually been entered (and is blocked inside the gate) before
+        // racing the logoff past it -- mirrors the real launcher's slow, blocking Win32 call
+        // chain (WTSQueryUserToken + CreateProcessAsUser) that the logoff can outrun.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!launcher.HasAttemptedLaunch(sessionId) && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(launcher.HasAttemptedLaunch(sessionId));
+
+        await manager.OnSessionLogoffAsync(sessionId);
+
+        launcher.ReleaseLaunch(sessionId);
+        await logonTask;
+
+        // The launch that raced past the logoff must notice the session is no longer active and
+        // tear itself down -- not leak a process, handle, and pipe loop nobody will ever collect.
+        await launcher.WaitForDisposedCountAsync(1);
+        Assert.Equal([sessionId], launcher.LaunchedSessions);
+        Assert.Equal([sessionId], launcher.DisposedSessions);
+    }
+
+    [Fact]
     public async Task Starting_with_an_already_active_session_launches_its_user_agent_without_waiting_for_a_notification()
     {
         var (manager, launcher, enumerator) = CreateManager();

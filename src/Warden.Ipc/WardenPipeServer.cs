@@ -79,6 +79,14 @@ public sealed class WardenPipeServer
         await Task.WhenAny(inboundTask, outboundTask).ConfigureAwait(false);
         await connectionCts.CancelAsync().ConfigureAwait(false);
 
+        // Task.WhenAny only observes the winner. The loser is still running (or about to be
+        // canceled) against `server` -- awaiting it here, before the `await using` above disposes
+        // the pipe, both prevents a dispose race with an in-flight read/write and makes sure a
+        // genuine fault (e.g. the pipe breaking mid-write of a queued message) gets logged instead
+        // of becoming a silent, unobserved task exception.
+        await ObserveAsync(inboundTask).ConfigureAwait(false);
+        await ObserveAsync(outboundTask).ConfigureAwait(false);
+
         _logger.LogInformation("IPC client disconnected");
         return true;
     }
@@ -87,6 +95,22 @@ public sealed class WardenPipeServer
         Func<PipeMessage, CancellationToken, Task<PipeMessage?>> handleMessageAsync,
         CancellationToken cancellationToken) =>
         AcceptAndServeOnceAsync(handleMessageAsync, outboundMessages: null, cancellationToken);
+
+    private async Task ObserveAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: this side lost the race and was canceled once the other side finished.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "IPC connection handler faulted");
+        }
+    }
 
     private static async Task ReadInboundAsync(
         NamedPipeServerStream server,
