@@ -64,19 +64,9 @@ Warden.Agent          IControlPlaneClient seam          Warden.ControlPlane
 
 The `IControlPlaneClient` seam is why the transport is swappable: in-process for `v0.1-core`, REST for `v0.2-mvp` — without touching `Core`.
 
-## Build sequence
-
-This repo is built in milestones, each tagged, each small and complete:
-
-| Tag | What it is | Status |
-|---|---|---|
-| `v0.1-core` | Reconciliation engine + simulated agent. The four hard behaviors proven by tests. No UI, no database, no real OS calls. This is the take-home-sized artifact. | ✅ Done |
-| `v0.2-mvp` | One real Windows policy (BitLocker), REST transport, PostgreSQL, bare dashboard. The full compliance loop end-to-end. | ✅ Done |
-| `v0.3-ipc` | User-context agent + hardened named-pipe IPC across the System↔User privilege boundary. The highest-signal Windows piece. | ✅ Done |
-
-See [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md) for the session-by-session build plan for `v0.1-core`.
-See [`docs/WARDEN_COURSE_IPC.md`](docs/WARDEN_COURSE_IPC.md) and [`docs/WARDEN_IPC.md`](docs/WARDEN_IPC.md) for the `v0.3-ipc` Windows IPC milestone.
-See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise spec and rubric this is built against.
+This repo shipped in three tagged milestones — `v0.1-core`, `v0.2-mvp`, `v0.3-ipc` — each small,
+complete, and green before the next one started. All three are done; the sections below walk
+through what each one added and how to run it, against the current code, not a separate checkout.
 
 ## Tech stack
 
@@ -100,7 +90,16 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 
 ## Running it
 
-### v0.1-core demo
+Each subsection below builds on the last, but all three run against the current code — no need to
+check out an earlier tag to see an earlier milestone; the tag just marks when that capability was
+added.
+
+### Reconciliation core (in-memory, zero setup)
+
+The base of the system: a pure reconciliation engine, an in-memory control plane, and a simulated
+fleet proving the four hard behaviors by test. This is the `v0.1-core` milestone — see
+[`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md) for the session-by-session build plan and
+[`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the exercise spec it's built against.
 
 ```bash
 git clone https://github.com/dvdduy/warden.git
@@ -122,7 +121,10 @@ happening as it goes:
 3. **Offline → reconnect** — a device that never ran a cycle reconciles to *current* desired state on its first connect, even if that state changed while it was "offline."
 4. **A live fleet** — 40 simulated agents converge against one control plane concurrently, with a colored compliant/non-compliant board and a final `FleetHealth` snapshot.
 
-### v0.2-mvp stack
+### Full stack: Postgres, REST, and a real BitLocker policy
+
+`v0.2-mvp` swaps the in-memory control plane for a real ASP.NET Core API backed by PostgreSQL,
+adds REST as the agent/control-plane transport, and wires up one real Windows policy end to end.
 
 ```bash
 docker compose up --build
@@ -150,11 +152,12 @@ and should be run elevated or as the Windows Service/LocalSystem. (The agent log
 at startup if fake mode is on — it's a config flag, not a build switch, and should never be left
 set on a real managed device.)
 
-### v0.3-ipc demo script
+### Windows IPC: user-agent + hardened named pipe
 
 `v0.3-ipc` adds the user-context boundary: `Warden.Agent` can keep running as the service-side
 remediator, while `Warden.UserAgent` runs in the logged-on user's desktop session and receives
-notifications over a hardened named pipe.
+notifications over a hardened named pipe. See [`docs/WARDEN_COURSE_IPC.md`](docs/WARDEN_COURSE_IPC.md)
+and [`docs/WARDEN_IPC.md`](docs/WARDEN_IPC.md) for the full design write-up.
 
 For the safe local demo, keep using fake BitLocker mode:
 
