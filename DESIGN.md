@@ -1,8 +1,8 @@
-# DESIGN.md — Warden `v0.1-core`
+# DESIGN.md — Warden
 
-> **Status:** complete as of `v0.1-core`. Written incrementally as each session landed rather than
-> backfilled at the end — the empirical sections (concurrency limits, observability) reflect what
-> the Session 6 concurrency test and structured logging actually showed, not speculation.
+> **Status:** `v0.1-core` and `v0.2-mvp` complete. Written incrementally as each session landed
+> rather than backfilled at the end — the empirical sections reflect what tests and integration
+> work actually showed, not speculation.
 
 ---
 
@@ -12,8 +12,9 @@ A fleet of Windows devices drifts out of a known-good state over time. No mechan
 detect drift automatically or correct it without a helpdesk ticket. Warden is the minimal system
 that makes drift visible within one polling cycle and corrects it without human intervention.
 
-`v0.1-core` proves the correctness model in-process with a simulated device. Real OS calls,
-a database, and a network transport are deliberately deferred to `v0.2-mvp`.
+`v0.1-core` proved the correctness model in-process with a simulated device. `v0.2-mvp` keeps
+that core unchanged while swapping in PostgreSQL, REST, a real BitLocker read/remediation path,
+and a bare dashboard.
 
 ---
 
@@ -85,6 +86,33 @@ without any change to `Warden.Core` or `Warden.Agent`.
 **Why this ordering:** the interesting engineering is in the delivery guarantees and reconciliation
 logic, not in HTTP plumbing. Proving correctness in-process first means the logic is right before
 a network is involved.
+
+### 7. `v0.2-mvp`: persistence, transport, and one real policy
+
+`v0.2-mvp` proves the seams from `v0.1-core` rather than rewriting the core:
+
+- `PostgresCommandStore` and `PostgresDeviceRepository` implement the same interfaces as the
+  in-memory stores. The command lifecycle rules still live in `Warden.Core`; PostgreSQL adds
+  durability and row-level locking, not new business logic.
+- `RestControlPlaneClient` implements the same `IControlPlaneClient` port the simulated agent
+  already used. The agent loop does not know whether calls are in-process or HTTP+JSON.
+- The Windows agent adds `IActualStateProvider` and `ICommandExecutor` outside `Warden.Core`.
+  Real mode shells out to `manage-bde`; fake mode exercises the same reporting/remediation
+  pipeline locally without admin rights or disk-encryption changes.
+- The dashboard is intentionally a read-only table. It exists to make the red-to-green loop
+  visible for a demo, not to become a product surface.
+
+### 8. BitLocker is asynchronous
+
+`manage-bde -on C:` starts remediation, but encryption/protection state is not a perfect
+instantaneous boolean. The agent therefore acks the command after the command invocation succeeds,
+then reports newly observed BitLocker state on the next poll. In fake mode this appears as:
+
+1. report `bitlocker.enabled=false` -> command issued and executed,
+2. next cycle reports `bitlocker.enabled=true` -> dashboard turns green.
+
+That timing is a feature of the real domain, not a bug in reconciliation. Compliance is based on
+observed state, not on wishfully assuming the command's effect is visible immediately.
 
 ---
 
@@ -180,7 +208,8 @@ enum CommandStatus { Pending, Delivered, Acked, Failed }
 `v0.1-core`'s concurrency test (`ConcurrencyTests`, Session 6) runs 200 simulated agents against
 one `InMemoryCommandStore`/`InMemoryDeviceRepository` pair behind a single `lock`. That's the
 honest ceiling of this design: it proves *correctness* under contention, not throughput at scale.
-At 1,000,000 devices, in order of what breaks first:
+After `v0.2-mvp`, the first-order conclusions still hold, but the concrete pressure points are
+clearer. At 1,000,000 devices, in order of what breaks first:
 
 1. **The single-lock in-memory store becomes the bottleneck first.** Every `ReportStateAndGetNewCommands`
    call and every sweep does a read-modify-write under one `lock (_gate)`. That's fine for hundreds
@@ -195,10 +224,11 @@ At 1,000,000 devices, in order of what breaks first:
    batch via `FOR UPDATE SKIP LOCKED` once the store is PostgreSQL-backed (see decision #5), so
    no single process scans the whole fleet.
 
-3. **In-memory storage doesn't survive a control-plane restart** — at this scale a restart mid-sweep
-   would leave commands stuck exactly where they were, with no way to resume ownership.
-   → PostgreSQL (or similar) behind the same `ICommandStore`/`IDeviceRepository` interfaces, which
-   is precisely why those interfaces exist — this is a `v0.2-mvp` swap, not a `v0.1-core` rewrite.
+3. **PostgreSQL removes the restart-loss problem, but not the fleet-scale scan problem.** The MVP
+   schema is intentionally direct: one `commands` table, one `devices` table, simple indexes.
+   At 1M devices I would first measure `ReportStateAndGetNewCommands` latency, command insert/update
+   contention, and the overdue-command sweeper query before choosing between partitioning, queueing,
+   or read replicas.
 
 4. **Polling every device on a fixed interval creates thundering-herd reconnect traffic** — if the
    control plane restarts or a network partition heals, every agent's next poll lands in the same
@@ -228,15 +258,10 @@ At 1,000,000 devices, in order of what breaks first:
 
 ---
 
-## What I'd do next (beyond `v0.1-core`)
+## What I'd do next (beyond `v0.2-mvp`)
 
-In roadmap order (see `docs/WARDEN_COURSE.md` "After v0.1-core"):
+In roadmap order:
 
-- **`v0.2-mvp`**: swap the simulated setting for a real one (BitLocker via P/Invoke or WMI), replace
-  `InProcessControlPlaneClient` with a REST implementation behind the same `IControlPlaneClient`
-  interface, add PostgreSQL behind `ICommandStore`/`IDeviceRepository`, and a bare dashboard reading
-  `ControlPlane.GetHealthSnapshot()`. None of this touches `Warden.Core` — that's the point of the
-  seams built in `v0.1-core`.
 - **`v0.3-ipc`**: the user-context agent and hardened named-pipe IPC across the System↔User privilege
   boundary. The highest-Windows-signal piece of this whole project, deliberately deferred until the
   correctness model underneath it is proven.
@@ -273,10 +298,9 @@ and "is anything actively failing?" (`FailedCommands`) without needing a metrics
 full scan at query time — fine at `v0.1-core` scale, listed as the first thing to replace with
 running counters at real scale (see "What I would do differently at 1,000,000 devices").
 
-**What's still missing:** correlation across a real network boundary (a trace/span id that survives
-serialization) — irrelevant while the transport is in-process, but the first thing `v0.2-mvp`'s REST
-transport would need. Also missing: metrics emission (counters/histograms) as opposed to log lines —
-fine for a demo, not for an on-call dashboard.
+**What's still missing:** a trace/span id distinct from `CommandId` for non-command requests such as
+enrollment, dashboard reads, and health checks. Metrics emission (counters/histograms) is also still
+absent; fine for a demo, not for an on-call dashboard.
 
 ## Open questions
 
@@ -297,7 +321,7 @@ Genuine unresolved trade-offs, not settled decisions:
    simple (`Action` as a plain string) was deliberate — the domain isn't the point. But it means the
    parsing logic is duplicated in two places instead of `Command` carrying a structured `(Key,
    Value)` target directly. I'd revisit this the moment a second action shape (not just `set:`)
-   shows up, which `v0.2-mvp`'s real BitLocker policy will likely force.
+   shows up beyond the current `set:bitlocker.enabled=true` / `enable-bitlocker` pair.
 3. **The ack-timeout sweeper is currently something the caller has to remember to invoke** —
    `ControlPlane.SweepAckTimeouts()` is not itself scheduled; `Warden.Demo` runs it on a
    `Task.Run` loop, but nothing in `Warden.ControlPlane` enforces that a host actually does this in

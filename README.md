@@ -71,7 +71,7 @@ This repo is built in milestones, each tagged, each small and complete:
 | Tag | What it is | Status |
 |---|---|---|
 | `v0.1-core` | Reconciliation engine + simulated agent. The four hard behaviors proven by tests. No UI, no database, no real OS calls. This is the take-home-sized artifact. | ✅ Done |
-| `v0.2-mvp` | One real Windows policy (BitLocker), REST transport, PostgreSQL, bare dashboard. The full compliance loop end-to-end. | ⬜ Planned |
+| `v0.2-mvp` | One real Windows policy (BitLocker), REST transport, PostgreSQL, bare dashboard. The full compliance loop end-to-end. | ✅ Done |
 | `v0.3-ipc` | User-context agent + hardened named-pipe IPC across the System↔User privilege boundary. The highest-signal Windows piece. | ⬜ Planned |
 
 See [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md) for the session-by-session build plan for `v0.1-core`.
@@ -87,7 +87,7 @@ See [`docs/WARDEN_TAKEHOME.md`](docs/WARDEN_TAKEHOME.md) for the full exercise s
 
 ## Running it
 
-> `v0.1-core` runs fully in-process — no Docker, no database.
+### v0.1-core demo
 
 ```bash
 git clone https://github.com/dvdduy/warden.git
@@ -96,10 +96,30 @@ dotnet test                          # all tests green (unit, failure-path, and 
 dotnet run --project src/Warden.Demo # watch reconciliation happen live
 ```
 
-> **`v0.2-mvp` in progress:** `Warden.ControlPlane.Tests` proves the PostgreSQL-backed
-> `ICommandStore`/`IDeviceRepository` implementations against a real database and needs
-> Postgres running first: `docker compose up -d postgres`, then `dotnet test` as above.
-> Everything else still runs with no external dependencies.
+### v0.2-mvp stack
+
+```bash
+docker compose up --build
+```
+
+That starts PostgreSQL and the ASP.NET Core control plane at:
+
+- Dashboard: `http://localhost:5000/dashboard`
+- Health: `http://localhost:5000/health`
+
+For a local-safe BitLocker demo without admin rights or changing disk encryption, run the agent
+in fake BitLocker mode against the compose control plane:
+
+```powershell
+$env:Agent__UseFakeBitLocker = "true"
+$env:Agent__FakeBitLockerEnabled = "false"
+$env:Agent__ControlPlaneBaseAddress = "http://localhost:5000"
+dotnet run --project src/Warden.Agent
+```
+
+The first cycle reports `bitlocker.enabled=false`, receives the normal remediation command,
+flips fake state in memory, and the next cycle reports green. The real mode uses `manage-bde`
+and should be run elevated or as the Windows Service/LocalSystem.
 
 The demo runs four scripted scenarios end-to-end with no human input, each printing what's
 happening as it goes:
@@ -121,4 +141,4 @@ Full reasoning in [`DESIGN.md`](DESIGN.md). The short version:
 
 ---
 
-*Status: `v0.1-core` complete — built session-by-session following [`docs/WARDEN_COURSE.md`](docs/WARDEN_COURSE.md). Next up: `v0.2-mvp`.*
+*Status: `v0.2-mvp` complete — built on the `v0.1-core` correctness model with PostgreSQL, REST, BitLocker read/remediation, and a bare dashboard.*
